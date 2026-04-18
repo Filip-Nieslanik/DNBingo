@@ -1,0 +1,5 @@
+# Firebase admin SDK klíč – NIKDY nedávat na GitHub!
+*-firebase-adminsdk-*.json
+
+# Claude Code local state
+.claude/

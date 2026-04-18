@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Music Bingo</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ===== WELCOME ===== -->
+  <div id="screen-welcome" class="screen active">
+    <div class="welcome-wrap">
+      <div class="logo">
+        <span class="logo-icon">&#127925;</span>
+        <span class="logo-text">Music Bingo</span>
+      </div>
+
+      <input id="input-name" type="text" placeholder="Tvoje jméno" maxlength="20" autocomplete="off">
+
+      <button id="btn-create" class="btn btn-primary">Vytvořit hru</button>
+
+      <div class="divider"><span>nebo</span></div>
+
+      <div class="join-row">
+        <input id="input-code" type="text" placeholder="Kód hry (6 znaků)" maxlength="6" autocomplete="off">
+        <button id="btn-join" class="btn btn-secondary">Připojit se</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== LOBBY ===== -->
+  <div id="screen-lobby" class="screen">
+    <div class="lobby-wrap">
+
+      <div class="code-banner">
+        Kód hry:&nbsp;<strong id="lbl-game-code"></strong>
+        <button id="btn-copy" class="btn-icon" title="Zkopírovat kód">&#128203;</button>
+      </div>
+
+      <div class="lobby-grid">
+
+        <!-- Players -->
+        <section class="panel">
+          <h3>Hráči <span class="badge" id="lbl-player-count">0</span></h3>
+          <ul id="list-players"></ul>
+        </section>
+
+        <!-- Song pool -->
+        <section class="panel pool-panel">
+          <h3>Pool písniček <span class="badge" id="lbl-pool-count">0</span></h3>
+          <div class="add-row">
+            <input id="input-song" type="text" placeholder="Název písničky…" maxlength="60" autocomplete="off">
+            <button id="btn-add-song" class="btn btn-secondary btn-sm">Přidat</button>
+          </div>
+          <ul id="list-pool"></ul>
+        </section>
+
+      </div>
+
+      <!-- Host controls -->
+      <div id="host-controls" class="hidden">
+        <button id="btn-start" class="btn btn-primary" disabled>Spustit hru</button>
+        <p id="lbl-start-hint" class="hint">Přidej aspoň 9 písniček.</p>
+      </div>
+
+      <!-- Player waiting -->
+      <div id="player-waiting" class="hidden">
+        <p class="hint waiting">&#9203; Čekej, hostitel spouští hru…</p>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===== CARD SELECTION ===== -->
+  <div id="screen-select" class="screen">
+    <div class="select-wrap">
+      <h2>Vyber 9 písniček pro svou kartu</h2>
+      <p class="select-counter"><span id="lbl-sel-count">0</span> / 9 vybráno</p>
+      <div id="pool-grid" class="pool-grid"></div>
+      <button id="btn-confirm" class="btn btn-primary" disabled>Potvrdit kartu</button>
+    </div>
+  </div>
+
+  <!-- ===== GAME ===== -->
+  <div id="screen-game" class="screen">
+
+    <header class="game-header">
+      <span class="header-code">Kód: <strong id="lbl-code-game"></strong></span>
+      <span class="header-marked">&#127925; Zahráno: <strong id="lbl-marked-count">0</strong></span>
+      <button id="btn-new-game" class="btn btn-ghost btn-sm">Nova hra</button>
+    </header>
+
+    <div class="game-body">
+
+      <!-- My card -->
+      <section class="my-section">
+        <h3 id="lbl-my-name">Tvoje karta</h3>
+        <div id="my-card" class="bingo-grid"></div>
+        <p id="lbl-my-progress" class="progress-text"></p>
+      </section>
+
+      <!-- Others -->
+      <section class="others-section">
+        <h3>Ostatní hráči</h3>
+        <div id="others-grid" class="others-grid"></div>
+      </section>
+
+    </div>
+
+    <!-- Marked songs log -->
+    <footer class="marked-footer">
+      <span class="footer-label">Zahrané písničky:</span>
+      <div id="marked-tags" class="marked-tags"></div>
+    </footer>
+
+  </div>
+
+  <!-- ===== WIN BANNER ===== -->
+  <div id="win-banner" class="win-banner hidden">
+    <div class="win-card">
+      <div class="confetti-row" id="confetti"></div>
+      <div class="win-emoji">&#127881;</div>
+      <div id="win-text" class="win-text"></div>
+      <button class="btn btn-primary btn-sm" id="btn-close-banner">Zavřít</button>
+    </div>
+  </div>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
