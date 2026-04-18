@@ -282,7 +282,8 @@ input[type="text"]:focus { border-color: var(--accent2); }
   gap: 8px;
   margin-bottom: 12px;
 }
-.add-row input { flex: 1; }
+.add-row input { flex: 1; min-width: 0; }
+.add-row .btn { width: auto; white-space: nowrap; flex-shrink: 0; }
 
 /* ======================================================
    CARD SELECTION
