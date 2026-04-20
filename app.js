@@ -4,7 +4,6 @@
 // players sign in anonymously (Auth UID = playerId), admin uses email/password.
 
 const ADMIN_UID         = 'bNAAXb9LreTJjuKQLjRBlLOUH2X2';
-const MAX_ACTIVE_GAMES  = 3;
 const HOST_HEARTBEAT_MS = 10_000;   // host touches hostLastSeen every 10s
 const HOST_GRACE_MS     = 30_000;   // >30s without heartbeat → "disconnected"
 const SEARCH_DEBOUNCE   = 400;
@@ -127,8 +126,17 @@ function coverPlaceholder(track) {
   return `linear-gradient(135deg, hsl(${hue} 70% 22%), hsl(${(hue + 40) % 360} 70% 12%))`;
 }
 
+// Whitelist cover URLs: http(s) only and no characters that could break out
+// of the CSS url() context (quotes, parens, angle brackets, whitespace).
+// Anything else falls back to the gradient placeholder.
+function safeCoverUrl(url) {
+  if (typeof url !== 'string' || url.length > 2048) return null;
+  return /^https?:\/\/[^'"<>\s)]+$/.test(url) ? url : null;
+}
+
 function coverStyle(track) {
-  if (track.cover) return `background-image:url('${esc(track.cover)}')`;
+  const url = safeCoverUrl(track.cover);
+  if (url) return `background-image:url('${url}')`;
   return `background:${coverPlaceholder(track)}`;
 }
 
@@ -356,6 +364,7 @@ async function tryReconnect() {
     gameId     = savedId;
     playerName = savedName;
     isHost     = snap.data().hostId === playerId;
+    if (isHost) startHostHeartbeat();
     listenToGame();
   } catch {
     // Offline or rules reject – stay on welcome, don't drop the save yet.
@@ -377,33 +386,23 @@ async function createGame() {
 
   await ensureAnonymousAuth();
 
-  let active;
-  try {
-    active = await db.collection('games')
-      .where('status', 'in', ['lobby', 'playing'])
-      .get({ source: 'server' });
-  } catch {
-    toast('Connection error.');
-    return;
-  }
-
-  // If the same user already hosts a game, replace it instead of stacking.
-  const myOwn       = active.docs.find(d => d.data().hostId === playerId);
-  const othersCount = active.size - (myOwn ? 1 : 0);
-
-  if (othersCount >= MAX_ACTIVE_GAMES) {
-    toast('Server limit reached. Please try again later.', 5000);
-    return;
-  }
-
-  if (myOwn) {
-    try { await db.collection('games').doc(myOwn.id).delete(); } catch {}
+  // If we're still listed as host on a previous game, replace it rather
+  // than stacking. We can't list the whole collection (admin-only), so we
+  // trust localStorage as the only anchor to our last session.
+  const priorId = localStorage.getItem('bingo_gid');
+  if (priorId) {
+    try {
+      const prior = await db.collection('games').doc(priorId).get({ source: 'server' });
+      if (prior.exists && prior.data().hostId === playerId) {
+        await db.collection('games').doc(priorId).delete();
+      }
+    } catch { /* ignore – worst case admin cleans up later */ }
   }
 
   playerName = name;
   isHost     = true;
 
-  // Retry on the astronomically unlikely code collision.
+  // Retry on the unlikely code collision (32^6 keyspace).
   let created = false;
   for (let attempt = 0; attempt < 5 && !created; attempt++) {
     const candidate = generateCode();
@@ -478,23 +477,16 @@ async function joinGame() {
 
 async function leaveGame() {
   if (!gameId) { newGame(); return; }
-  const id      = gameId;
-  const wasHost = isHost;
+  const id = gameId;
   stopHostHeartbeat();
   if (unsubGame) { unsubGame(); unsubGame = null; }
 
+  // Even the host only removes themselves as a player – the game lives on
+  // until End Game, admin termination, or the session is otherwise cleaned up.
   try {
-    if (wasHost) {
-      // Leaving as host keeps the game alive during grace window – the admin
-      // or an explicit End Game ends it. We just drop ourselves as a player.
-      await db.collection('games').doc(id).update({
-        [`players.${playerId}`]: firebase.firestore.FieldValue.delete()
-      });
-    } else {
-      await db.collection('games').doc(id).update({
-        [`players.${playerId}`]: firebase.firestore.FieldValue.delete()
-      });
-    }
+    await db.collection('games').doc(id).update({
+      [`players.${playerId}`]: firebase.firestore.FieldValue.delete()
+    });
   } catch {}
 
   newGame();

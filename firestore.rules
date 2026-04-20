@@ -1,31 +1,72 @@
 rules_version = '2';
 
-// DNBingo Firestore rules.
-// Kept in-repo as source of truth; mirror what's deployed in the Firebase console.
+// DNBingo Firestore rules. Kept in-repo as source of truth; mirror what's
+// deployed in the Firebase console.
+//
+// Model: one document per game under /games/{gameId}. Any authenticated user
+// can read a game *by id* (needed to join by code); only the admin can list
+// the collection (prevents enumeration of active games). Writes are split:
+// hosts and admins can do anything; non-host players can only join and
+// update their own slot / pool / marked ids / claim a win.
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isAdmin() {
+      return isSignedIn()
+          && request.auth.uid == 'bNAAXb9LreTJjuKQLjRBlLOUH2X2';
+    }
+    function isHost(gameData) {
+      return gameData.hostId == request.auth.uid;
+    }
+    function isInGame(gameData) {
+      return request.auth.uid in gameData.players;
+    }
+
     match /games/{gameId} {
-      // Anyone signed in (anonymous is fine) can read an active game.
-      allow read: if request.auth != null;
 
-      // Creating a game: the creator must be the host listed in the doc.
-      allow create: if request.auth != null
-                    && request.resource.data.hostId == request.auth.uid;
+      // Read by id (join flow, active game snapshot) — any signed-in user.
+      // Listing — admin only. This blocks anonymous clients from enumerating
+      // every active game and scraping codes/names.
+      allow get:  if isSignedIn();
+      allow list: if isAdmin();
 
-      // Updates:
-      //   - the host can change anything on their game
-      //   - any signed-in player can join (add themselves to `players`)
-      //     or update their own subfields (card, hasWon)
-      //   - win claim transaction updates winner/winnerName/status
-      allow update: if request.auth != null && (
-        resource.data.hostId == request.auth.uid
-        || request.auth.uid in request.resource.data.players
+      // Fresh-game shape: creator is host, status is lobby, pool/marks empty,
+      // no pre-declared winner. Prevents crafting a half-finished doc.
+      allow create: if isSignedIn()
+                    && request.resource.data.hostId == request.auth.uid
+                    && request.resource.data.status == 'lobby'
+                    && request.resource.data.version == 2
+                    && request.resource.data.pool.size() == 0
+                    && request.resource.data.markedIds.size() == 0
+                    && request.resource.data.winner == null;
+
+      // Host and admin can update anything on the game.
+      // Non-host players may only write if they are in the new players map
+      // and only touch gameplay fields — never host, createdAt, version, or
+      // the host's heartbeat timestamp.
+      allow update: if isSignedIn() && (
+        isHost(resource.data)
+        || isAdmin()
+        || (
+          isInGame(request.resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'players', 'pool', 'markedIds',
+               'winner', 'winnerName', 'status'
+             ])
+        )
       );
 
-      // Only the host can delete a game.
-      allow delete: if request.auth != null
-                    && resource.data.hostId == request.auth.uid;
+      // Only the host or the admin can end a game.
+      allow delete: if isSignedIn() && (isHost(resource.data) || isAdmin());
+    }
+
+    // Everything outside /games is denied.
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
