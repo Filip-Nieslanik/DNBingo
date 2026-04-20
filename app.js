@@ -473,12 +473,33 @@ function renderLobby(game) {
     const isHostRow = pid === game.hostId;
     const canKick   = isHost && !isHostRow && !isMe;
     const li = document.createElement('li');
-    li.innerHTML = `
-      <span class="player-dot" style="background:${playerColor(pid)}"></span>
-      <span>${esc(p.name)}${isMe ? ' (you)' : ''}</span>
-      ${isHostRow ? '<span class="host-tag">Host</span>' : ''}
-      ${canKick ? `<button class="btn-kick" data-pid="${esc(pid)}" title="Kick">✕</button>` : ''}
-    `;
+
+    const dot = document.createElement('span');
+    dot.className = 'player-dot';
+    dot.style.background = playerColor(pid);
+    li.appendChild(dot);
+
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = p.name + (isMe ? ' (you)' : '');
+    li.appendChild(nameSpan);
+    li.appendChild(document.createTextNode(' '));
+
+    if (isHostRow) {
+      const hostTag = document.createElement('span');
+      hostTag.className = 'host-tag';
+      hostTag.textContent = 'Host';
+      li.appendChild(hostTag);
+    }
+
+    if (canKick) {
+      const kickBtn = document.createElement('button');
+      kickBtn.className = 'btn-kick';
+      kickBtn.dataset.pid = pid;
+      kickBtn.title = 'Kick';
+      kickBtn.textContent = '✕';
+      li.appendChild(kickBtn);
+    }
+
     ul.appendChild(li);
   }
 
@@ -488,10 +509,20 @@ function renderLobby(game) {
   poolUl.innerHTML = '';
   for (const song of pool) {
     const li = document.createElement('li');
-    li.innerHTML = `
-      <span>${esc(song)}</span>
-      ${isHost ? `<button class="btn-remove" data-song="${esc(song)}" title="Remove">✕</button>` : ''}
-    `;
+
+    const songSpan = document.createElement('span');
+    songSpan.textContent = song;
+    li.appendChild(songSpan);
+
+    if (isHost) {
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'btn-remove';
+      removeBtn.dataset.song = song;
+      removeBtn.title = 'Remove';
+      removeBtn.textContent = '✕';
+      li.appendChild(removeBtn);
+    }
+
     poolUl.appendChild(li);
   }
 
@@ -604,28 +635,59 @@ function renderOtherCard(pid, p, marked, markedSet) {
   const badgeClass = bingo ? 'bingo' : hot ? 'hot' : '';
   const badgeText  = bingo ? '🏆 BINGO!' : `${prog} / 3`;
 
-  el.innerHTML = `
-    <div class="other-header">
-      <span class="other-name">
-        <span class="other-dot" style="background:${playerColor(pid)}"></span>
-        ${esc(p.name)}
-      </span>
-      <span class="prog-badge ${badgeClass}">${badgeText}</span>
-    </div>
-    <div class="mini-grid">
-      ${p.card.map((song, i) => `
-        <div class="mini-cell ${markedSet.has(song) ? (winSet.has(i) ? 'winning' : 'marked') : ''}">${esc(song)}</div>
-      `).join('')}
-    </div>
-  `;
+  const header = document.createElement('div');
+  header.className = 'other-header';
+
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'other-name';
+  const dotSpan = document.createElement('span');
+  dotSpan.className = 'other-dot';
+  dotSpan.style.background = playerColor(pid);
+  nameSpan.appendChild(dotSpan);
+  nameSpan.appendChild(document.createTextNode(p.name));
+  header.appendChild(nameSpan);
+
+  const badgeSpan = document.createElement('span');
+  badgeSpan.className = `prog-badge ${badgeClass}`;
+  badgeSpan.textContent = badgeText;
+  header.appendChild(badgeSpan);
+
+  el.appendChild(header);
+
+  const grid = document.createElement('div');
+  grid.className = 'mini-grid';
+  p.card.forEach((song, i) => {
+    const cell = document.createElement('div');
+    const classNames = ['mini-cell'];
+    if (markedSet.has(song)) {
+      classNames.push(winSet.has(i) ? 'winning' : 'marked');
+    }
+    cell.className = classNames.join(' ');
+    cell.textContent = song;
+    grid.appendChild(cell);
+  });
+
+  el.appendChild(grid);
+
   return el;
 }
 
 function showWinBanner(name, isMe) {
   const banner = $('win-banner');
-  $('win-text').innerHTML = isMe
-    ? '<div style="font-size:2rem;margin-bottom:4px">BINGO!</div><div>You won! 🎉</div>'
-    : `<div style="font-size:1.6rem;margin-bottom:4px">BINGO!</div><div>${esc(name)} won!</div>`;
+  const winText = $('win-text');
+  winText.innerHTML = '';
+
+  const titleDiv = document.createElement('div');
+  titleDiv.textContent = 'BINGO!';
+  titleDiv.style.marginBottom = '4px';
+  titleDiv.style.fontSize = isMe ? '2rem' : '1.6rem';
+
+  const descDiv = document.createElement('div');
+  descDiv.textContent = isMe ? 'You won! 🎉' : `${name} won!`;
+
+  winText.appendChild(titleDiv);
+  winText.appendChild(descDiv);
+
   banner.classList.remove('hidden');
   if (!isMe) setTimeout(() => banner.classList.add('hidden'), 7000);
 }
@@ -706,23 +768,62 @@ function renderAdminSessions(snap) {
 
     const card = document.createElement('div');
     card.className = `session-card status-${esc(g.status)}`;
-    card.innerHTML = `
-      <div class="session-head">
-        <span class="session-code">${esc(doc.id)}</span>
-        <span class="session-status status-${esc(g.status)}">${esc(g.status)}</span>
-      </div>
-      <div class="session-meta">
-        <div>Host: <strong>${esc(hostName)}</strong></div>
-        <div>Created: ${formatDate(g.createdAt)} <span class="session-age">(${formatAge(g.createdAt)})</span></div>
-        <div>Pool: ${(g.pool || []).length} songs · Played: ${(g.markedSongs || []).length}</div>
-      </div>
-      <div class="session-players">
-        <strong>${players.length} player${players.length === 1 ? '' : 's'}:</strong>
-        ${players.map(p => esc(p.name)).join(', ') || '—'}
-      </div>
-      <button class="btn btn-terminate btn-sm" data-id="${esc(doc.id)}">Terminate</button>
-    `;
-    card.querySelector('.btn-terminate').addEventListener('click', () => terminateGame(doc.id));
+
+    // Header
+    const head = document.createElement('div');
+    head.className = 'session-head';
+    const codeSpan = document.createElement('span');
+    codeSpan.className = 'session-code';
+    codeSpan.textContent = doc.id;
+    const statusSpan = document.createElement('span');
+    statusSpan.className = `session-status status-${esc(g.status)}`;
+    statusSpan.textContent = g.status;
+    head.appendChild(codeSpan);
+    head.appendChild(statusSpan);
+    card.appendChild(head);
+
+    // Meta
+    const meta = document.createElement('div');
+    meta.className = 'session-meta';
+
+    const hostDiv = document.createElement('div');
+    hostDiv.textContent = 'Host: ';
+    const hostStrong = document.createElement('strong');
+    hostStrong.textContent = hostName;
+    hostDiv.appendChild(hostStrong);
+    meta.appendChild(hostDiv);
+
+    const createdDiv = document.createElement('div');
+    createdDiv.textContent = `Created: ${formatDate(g.createdAt)} `;
+    const ageSpan = document.createElement('span');
+    ageSpan.className = 'session-age';
+    ageSpan.textContent = `(${formatAge(g.createdAt)})`;
+    createdDiv.appendChild(ageSpan);
+    meta.appendChild(createdDiv);
+
+    const poolDiv = document.createElement('div');
+    poolDiv.textContent = `Pool: ${(g.pool || []).length} songs · Played: ${(g.markedSongs || []).length}`;
+    meta.appendChild(poolDiv);
+
+    card.appendChild(meta);
+
+    // Players
+    const playersDiv = document.createElement('div');
+    playersDiv.className = 'session-players';
+    const playersStrong = document.createElement('strong');
+    playersStrong.textContent = `${players.length} player${players.length === 1 ? '' : 's'}: `;
+    playersDiv.appendChild(playersStrong);
+    playersDiv.appendChild(document.createTextNode(players.map(p => p.name).join(', ') || '—'));
+    card.appendChild(playersDiv);
+
+    // Terminate button
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-terminate btn-sm';
+    btn.dataset.id = doc.id;
+    btn.textContent = 'Terminate';
+    btn.addEventListener('click', () => terminateGame(doc.id));
+    card.appendChild(btn);
+
     container.appendChild(card);
   }
 }
