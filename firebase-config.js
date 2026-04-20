@@ -1,10 +1,5 @@
-// ============================================================
-// Firebase webova konfigurace pro Music Bingo
-// ------------------------------------------------------------
-// Poznamka: apiKey v klientskem kodu NENI secret. Je to verejny
-// identifikator projektu. Skutecna ochrana dat je v Firestore
-// Security Rules v konzoli Firebase.
-// ============================================================
+// Firebase web config for DNBingo. The apiKey here is a public project
+// identifier, not a secret — data protection is enforced by Firestore rules.
 
 const firebaseConfig = {
   apiKey:            "AIzaSyDVOvjm5fShcyMt_UszpgCwt9IdEOxXR5I",
