@@ -1,18 +1,18 @@
-// Music Bingo — client
-// Real-time multiplayer 3x3 bingo on top of Firestore.
-// Players sign in anonymously (stable UID = playerId); admin uses email/password.
+// DNBingo client.
+// Real-time 3x3 music bingo on top of Firestore.
+// Players sign in anonymously (Auth UID = playerId), admin uses email/password.
 
 const ADMIN_UID        = 'bNAAXb9LreTJjuKQLjRBlLOUH2X2';
 const MAX_ACTIVE_GAMES = 3;
 
-// All 8 winning lines expressed as cell indices 0..8 on a 3x3 grid.
+// Winning lines as cell indices on a 3x3 grid.
 const LINES = [
   [0,1,2],[3,4,5],[6,7,8],
   [0,3,6],[1,4,7],[2,5,8],
   [0,4,8],[2,4,6]
 ];
 
-const COLORS = ['#e0335c','#7c4dff','#00b0d8','#ff8c00','#3dba6f','#e040fb','#26c6da'];
+const COLORS = ['#ff2e7a','#00e5ff','#c5ff00','#ff8c00','#7c4dff','#3dba6f','#e040fb'];
 
 const auth = firebase.auth();
 const db   = firebase.firestore();
@@ -36,9 +36,12 @@ const gameDoc = () => db.collection('games').doc(gameId);
 
 // Helpers
 function generateCode() {
+  // CSPRNG – game codes must not be predictable.
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const buf   = new Uint32Array(6);
+  crypto.getRandomValues(buf);
   let out = '';
-  for (let i = 0; i < 6; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  for (const n of buf) out += chars[n % chars.length];
   return out;
 }
 
@@ -564,7 +567,7 @@ function renderBoard(game, prev) {
   });
 
   $('lbl-my-progress').textContent = winLine
-    ? '🏆 BINGO!'
+    ? 'BINGO!'
     : `Best line: ${maxLineProgress(card, marked)} / 3`;
 
   const tagsEl = $('marked-tags');
@@ -576,10 +579,10 @@ function renderBoard(game, prev) {
     tagsEl.appendChild(span);
   }
 
-  // Toast newly added songs (fires for everyone whenever someone marks).
+  // Toast each newly marked song (once per player, triggered by any mark).
   if (prev?.markedSongs) {
     for (const s of marked) {
-      if (!prev.markedSongs.includes(s)) toast(`🎵 "${s}" played!`, 2500);
+      if (!prev.markedSongs.includes(s)) toast(`"${s}" played`, 2500);
     }
   }
 
@@ -602,7 +605,7 @@ function renderOtherCard(pid, p, marked, markedSet) {
   el.className = 'other-card' + (bingo ? ' bingo' : hot ? ' hot' : '');
 
   const badgeClass = bingo ? 'bingo' : hot ? 'hot' : '';
-  const badgeText  = bingo ? '🏆 BINGO!' : `${prog} / 3`;
+  const badgeText  = bingo ? 'BINGO!' : `${prog} / 3`;
 
   el.innerHTML = `
     <div class="other-header">
@@ -624,8 +627,8 @@ function renderOtherCard(pid, p, marked, markedSet) {
 function showWinBanner(name, isMe) {
   const banner = $('win-banner');
   $('win-text').innerHTML = isMe
-    ? '<div style="font-size:2rem;margin-bottom:4px">BINGO!</div><div>You won! 🎉</div>'
-    : `<div style="font-size:1.6rem;margin-bottom:4px">BINGO!</div><div>${esc(name)} won!</div>`;
+    ? '<div class="win-title">BINGO!</div><div>You won!</div>'
+    : `<div class="win-title">BINGO!</div><div>${esc(name)} won!</div>`;
   banner.classList.remove('hidden');
   if (!isMe) setTimeout(() => banner.classList.add('hidden'), 7000);
 }
