@@ -1,5 +1,2 @@
 # Firebase admin SDK key — never commit
 *-firebase-adminsdk-*.json
-
-# Claude Code local state
-.claude/
