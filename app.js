@@ -1,14 +1,15 @@
-// ============================================================
-// Music Bingo – app.js
-// ============================================================
+// Music Bingo — client
+// Real-time multiplayer 3x3 bingo on top of Firestore.
+// Players sign in anonymously (stable UID = playerId); admin uses email/password.
 
 const ADMIN_UID        = 'bNAAXb9LreTJjuKQLjRBlLOUH2X2';
 const MAX_ACTIVE_GAMES = 3;
 
+// All 8 winning lines expressed as cell indices 0..8 on a 3x3 grid.
 const LINES = [
-  [0,1,2],[3,4,5],[6,7,8],   // rows
-  [0,3,6],[1,4,7],[2,5,8],   // cols
-  [0,4,8],[2,4,6]            // diagonals
+  [0,1,2],[3,4,5],[6,7,8],
+  [0,3,6],[1,4,7],[2,5,8],
+  [0,4,8],[2,4,6]
 ];
 
 const COLORS = ['#e0335c','#7c4dff','#00b0d8','#ff8c00','#3dba6f','#e040fb','#26c6da'];
@@ -17,23 +18,28 @@ const auth = firebase.auth();
 const db   = firebase.firestore();
 auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(() => {});
 
-// ── State ──────────────────────────────────────────────────
+// State
 let gameId        = null;
-let playerId      = null;         // Firebase Auth UID
+let playerId      = null;   // = Firebase Auth UID
 let playerName    = null;
 let isHost        = false;
+let isAdmin       = false;
 let currentGame   = null;
-let unsubscribe   = null;
-let unsubAdmin    = null;
 let cardSelection = new Set();
 let prevWinner    = null;
-let isAdmin       = false;
+let unsubGame     = null;
+let unsubAdmin    = null;
 
-// ── Helpers ────────────────────────────────────────────────
+// Shorthands
+const $ = id => document.getElementById(id);
+const gameDoc = () => db.collection('games').doc(gameId);
 
+// Helpers
 function generateCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  return Array.from({length: 6}, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  let out = '';
+  for (let i = 0; i < 6; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
 }
 
 function playerColor(id) {
@@ -42,18 +48,18 @@ function playerColor(id) {
   return COLORS[h];
 }
 
-function esc(str) {
-  return String(str)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
+  $(id).classList.add('active');
 }
 
-function showToast(msg, ms = 3000) {
+function toast(msg, ms = 3000) {
   document.querySelector('.toast')?.remove();
   const t = document.createElement('div');
   t.className = 'toast';
@@ -71,132 +77,102 @@ function formatDate(ts) {
 function formatAge(ts) {
   if (!ts) return '—';
   const d = ts.toDate ? ts.toDate() : new Date(ts);
-  const diffMs = Date.now() - d.getTime();
-  const mins  = Math.floor(diffMs / 60000);
-  if (mins < 1)    return 'just now';
-  if (mins < 60)   return `${mins} min ago`;
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (mins < 1)   return 'just now';
+  if (mins < 60)  return `${mins} min ago`;
   const hours = Math.floor(mins / 60);
-  if (hours < 24)  return `${hours} h ago`;
+  if (hours < 24) return `${hours} h ago`;
   const days = Math.floor(hours / 24);
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
-// ── Bingo logic ────────────────────────────────────────────
-
-function checkBingo(card, markedSongs) {
+// Bingo logic
+function checkBingo(card, marked) {
   if (!card || card.length !== 9) return null;
-  const m = new Set(markedSongs);
+  const m = new Set(marked);
   for (const line of LINES) {
     if (line.every(i => m.has(card[i]))) return line;
   }
   return null;
 }
 
-function maxLineProgress(card, markedSongs) {
+function maxLineProgress(card, marked) {
   if (!card || card.length !== 9) return 0;
-  const m = new Set(markedSongs);
+  const m = new Set(marked);
   return Math.max(...LINES.map(line => line.filter(i => m.has(card[i])).length));
 }
 
-// ── Auth ───────────────────────────────────────────────────
-
+// Auth
 async function ensureAnonymousAuth() {
-  if (auth.currentUser && auth.currentUser.isAnonymous) {
-    playerId = auth.currentUser.uid;
-    return;
-  }
-  // If signed in as admin, sign out first
-  if (auth.currentUser && !auth.currentUser.isAnonymous) {
-    await auth.signOut();
-  }
+  const u = auth.currentUser;
+  if (u && u.isAnonymous) { playerId = u.uid; return; }
+  if (u && !u.isAnonymous) await auth.signOut();
   const cred = await auth.signInAnonymously();
   playerId = cred.user.uid;
 }
 
 function authStateReady() {
   return new Promise(resolve => {
-    const unsub = auth.onAuthStateChanged(user => {
-      unsub();
-      resolve(user);
-    });
+    const off = auth.onAuthStateChanged(u => { off(); resolve(u); });
   });
 }
 
-// ── Init ───────────────────────────────────────────────────
-
+// Init
 document.addEventListener('DOMContentLoaded', async () => {
-  // Welcome – mode chooser
-  document.getElementById('btn-mode-create').addEventListener('click', () => setWelcomeMode('create'));
-  document.getElementById('btn-mode-join').addEventListener('click',   () => setWelcomeMode('join'));
+  $('btn-mode-create').addEventListener('click', () => setWelcomeMode('create'));
+  $('btn-mode-join').addEventListener('click',   () => setWelcomeMode('join'));
   document.querySelectorAll('.back-link[data-back="chooser"]').forEach(b =>
     b.addEventListener('click', () => setWelcomeMode('chooser'))
   );
 
-  // Welcome – actions
-  document.getElementById('btn-create').addEventListener('click', createGame);
-  document.getElementById('btn-join').addEventListener('click', joinGame);
-  document.getElementById('input-name-create').addEventListener('keydown', e => e.key === 'Enter' && createGame());
-  document.getElementById('input-name-join').addEventListener('keydown',   e => e.key === 'Enter' && joinGame());
-  document.getElementById('input-code').addEventListener('keydown',        e => e.key === 'Enter' && joinGame());
+  $('btn-create').addEventListener('click', createGame);
+  $('btn-join').addEventListener('click', joinGame);
+  $('input-name-create').addEventListener('keydown', e => e.key === 'Enter' && createGame());
+  $('input-name-join').addEventListener('keydown',   e => e.key === 'Enter' && joinGame());
+  $('input-code').addEventListener('keydown',        e => e.key === 'Enter' && joinGame());
 
-  // Lobby
-  document.getElementById('btn-copy').addEventListener('click', () => {
-    navigator.clipboard.writeText(gameId).then(() => showToast('Code copied!'));
+  $('btn-copy').addEventListener('click', () => {
+    navigator.clipboard.writeText(gameId).then(() => toast('Code copied!'));
   });
-  document.getElementById('btn-add-song').addEventListener('click', addSong);
-  document.getElementById('input-song').addEventListener('keydown', e => e.key === 'Enter' && addSong());
-  document.getElementById('btn-start').addEventListener('click', startGame);
-  document.getElementById('btn-leave-lobby').addEventListener('click', leaveGame);
+  $('btn-add-song').addEventListener('click', addSong);
+  $('input-song').addEventListener('keydown', e => e.key === 'Enter' && addSong());
+  $('btn-start').addEventListener('click', startGame);
+  $('btn-leave-lobby').addEventListener('click', leaveGame);
 
-  // Event delegation for pool remove + player kick
-  document.getElementById('list-pool').addEventListener('click', e => {
+  $('list-pool').addEventListener('click', e => {
     const btn = e.target.closest('.btn-remove');
     if (btn) removeSong(btn.dataset.song);
   });
-  document.getElementById('list-players').addEventListener('click', e => {
+  $('list-players').addEventListener('click', e => {
     const btn = e.target.closest('.btn-kick');
     if (btn) kickPlayer(btn.dataset.pid);
   });
 
-  // Card selection
-  document.getElementById('btn-confirm').addEventListener('click', confirmCard);
+  $('btn-confirm').addEventListener('click', confirmCard);
+  $('btn-new-game').addEventListener('click', newGame);
+  $('btn-close-banner').addEventListener('click', () => $('win-banner').classList.add('hidden'));
 
-  // Game
-  document.getElementById('btn-new-game').addEventListener('click', newGame);
-
-  // Win banner
-  document.getElementById('btn-close-banner').addEventListener('click', () => {
-    document.getElementById('win-banner').classList.add('hidden');
-  });
-
-  // Admin
-  document.getElementById('btn-admin-login').addEventListener('click', adminLogin);
-  document.getElementById('input-admin-pass').addEventListener('keydown', e => e.key === 'Enter' && adminLogin());
-  document.getElementById('btn-admin-logout').addEventListener('click', adminLogout);
-  document.getElementById('link-admin-back').addEventListener('click', e => {
+  $('btn-admin-login').addEventListener('click', adminLogin);
+  $('input-admin-pass').addEventListener('keydown', e => e.key === 'Enter' && adminLogin());
+  $('btn-admin-logout').addEventListener('click', adminLogout);
+  $('link-admin-back').addEventListener('click', e => {
     e.preventDefault();
     location.hash = '';
   });
 
   window.addEventListener('hashchange', route);
 
-  // Wait for auth to finish initializing
   await authStateReady();
   await route();
 });
 
-// ── Routing ────────────────────────────────────────────────
-
+// #admin → admin flow, anything else → normal game flow.
 async function route() {
-  const hash = location.hash.replace(/^#/, '');
-
-  // Clean up any existing listeners when switching flows
-  if (hash === 'admin') {
+  if (location.hash === '#admin') {
     await enterAdminFlow();
     return;
   }
 
-  // Leaving admin?
   if (unsubAdmin) { unsubAdmin(); unsubAdmin = null; }
   if (isAdmin) {
     isAdmin = false;
@@ -207,22 +183,14 @@ async function route() {
   await tryReconnect();
 }
 
-// ── Welcome mode switcher ──────────────────────────────────
-
 function setWelcomeMode(mode) {
-  const chooser = document.getElementById('welcome-chooser');
-  const create  = document.getElementById('welcome-create');
-  const join    = document.getElementById('welcome-join');
+  $('welcome-chooser').classList.toggle('hidden', mode !== 'chooser');
+  $('welcome-create').classList.toggle('hidden',  mode !== 'create');
+  $('welcome-join').classList.toggle('hidden',    mode !== 'join');
 
-  chooser.classList.toggle('hidden', mode !== 'chooser');
-  create.classList.toggle('hidden',  mode !== 'create');
-  join.classList.toggle('hidden',    mode !== 'join');
-
-  if (mode === 'create') document.getElementById('input-name-create').focus();
-  if (mode === 'join')   document.getElementById('input-name-join').focus();
+  if (mode === 'create') $('input-name-create').focus();
+  if (mode === 'join')   $('input-name-join').focus();
 }
-
-// ── Reconnect ──────────────────────────────────────────────
 
 async function tryReconnect() {
   showScreen('screen-welcome');
@@ -234,16 +202,15 @@ async function tryReconnect() {
 
   try {
     const snap = await db.collection('games').doc(savedId).get();
-    if (!snap.exists) { clearSave(); return; }
-    const game = snap.data();
-    if (!game.players?.[playerId]) { clearSave(); return; }
-
+    if (!snap.exists || !snap.data().players?.[playerId]) {
+      clearSave();
+      return;
+    }
     gameId     = savedId;
     playerName = savedName;
-    isHost     = game.hostId === playerId;
-
+    isHost     = snap.data().hostId === playerId;
     listenToGame();
-  } catch (_) { /* ignore */ }
+  } catch { /* offline or rules reject — stay on welcome */ }
 }
 
 function clearSave() {
@@ -251,34 +218,32 @@ function clearSave() {
   localStorage.removeItem('bingo_name');
 }
 
-// ── Create / Join ──────────────────────────────────────────
-
+// Create / join / leave
 async function createGame() {
-  const name = document.getElementById('input-name-create').value.trim();
-  if (!name) { showToast('Please enter your name!'); return; }
+  const name = $('input-name-create').value.trim();
+  if (!name) { toast('Please enter your name!'); return; }
 
   await ensureAnonymousAuth();
 
-  // Count active games (lobby + playing)
-  let activeSnap;
+  let active;
   try {
-    activeSnap = await db.collection('games').where('status', 'in', ['lobby', 'playing']).get();
-  } catch (e) {
-    showToast('Connection error.');
+    active = await db.collection('games').where('status', 'in', ['lobby', 'playing']).get();
+  } catch {
+    toast('Connection error.');
     return;
   }
 
-  // If I already host an active game, delete it (replace with new)
-  const myOwn = activeSnap.docs.find(d => d.data().hostId === playerId);
-  const othersCount = activeSnap.docs.filter(d => d.data().hostId !== playerId).length;
+  // If the same user already hosts a game, replace it instead of stacking.
+  const myOwn = active.docs.find(d => d.data().hostId === playerId);
+  const othersCount = active.size - (myOwn ? 1 : 0);
 
   if (othersCount >= MAX_ACTIVE_GAMES) {
-    showToast('Server limit reached. Please try again later.', 5000);
+    toast('Server limit reached. Please try again later.', 5000);
     return;
   }
 
   if (myOwn) {
-    try { await db.collection('games').doc(myOwn.id).delete(); } catch (_) {}
+    try { await db.collection('games').doc(myOwn.id).delete(); } catch {}
   }
 
   playerName = name;
@@ -289,20 +254,18 @@ async function createGame() {
   localStorage.setItem('bingo_name', name);
 
   try {
-    await db.collection('games').doc(gameId).set({
+    await gameDoc().set({
       hostId:      playerId,
       status:      'lobby',
       pool:        [],
       markedSongs: [],
-      players: {
-        [playerId]: { name, card: null, hasWon: false }
-      },
-      winner:     null,
-      winnerName: null,
-      createdAt:  firebase.firestore.FieldValue.serverTimestamp()
+      players:     { [playerId]: { name, card: null, hasWon: false } },
+      winner:      null,
+      winnerName:  null,
+      createdAt:   firebase.firestore.FieldValue.serverTimestamp()
     });
-  } catch (e) {
-    showToast('Failed to create game.');
+  } catch {
+    toast('Failed to create game.');
     clearSave();
     return;
   }
@@ -311,22 +274,19 @@ async function createGame() {
 }
 
 async function joinGame() {
-  const name = document.getElementById('input-name-join').value.trim();
-  const code = document.getElementById('input-code').value.trim().toUpperCase();
-
-  if (!name) { showToast('Please enter your name!'); return; }
-  if (!code) { showToast('Please enter game code!'); return; }
+  const name = $('input-name-join').value.trim();
+  const code = $('input-code').value.trim().toUpperCase();
+  if (!name) { toast('Please enter your name!'); return; }
+  if (!code) { toast('Please enter game code!'); return; }
 
   await ensureAnonymousAuth();
 
   let snap;
-  try {
-    snap = await db.collection('games').doc(code).get();
-  } catch (_) {
-    showToast('Connection error.'); return;
-  }
-  if (!snap.exists)                   { showToast('Game not found.'); return; }
-  if (snap.data().status !== 'lobby') { showToast('Game already started or finished.'); return; }
+  try { snap = await db.collection('games').doc(code).get(); }
+  catch { toast('Connection error.'); return; }
+
+  if (!snap.exists)                   { toast('Game not found.'); return; }
+  if (snap.data().status !== 'lobby') { toast('Game already started or finished.'); return; }
 
   playerName = name;
   gameId     = code;
@@ -335,7 +295,7 @@ async function joinGame() {
   localStorage.setItem('bingo_gid',  gameId);
   localStorage.setItem('bingo_name', name);
 
-  await db.collection('games').doc(gameId).update({
+  await gameDoc().update({
     [`players.${playerId}`]: { name, card: null, hasWon: false }
   });
 
@@ -346,8 +306,7 @@ async function leaveGame() {
   if (!gameId) { newGame(); return; }
   const id = gameId;
   const wasHost = isHost;
-
-  if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+  if (unsubGame) { unsubGame(); unsubGame = null; }
 
   try {
     if (wasHost) {
@@ -357,23 +316,23 @@ async function leaveGame() {
         [`players.${playerId}`]: firebase.firestore.FieldValue.delete()
       });
     }
-  } catch (_) {}
+  } catch {}
 
   newGame();
 }
 
-// ── Lobby actions ──────────────────────────────────────────
-
+// Lobby actions
 async function addSong() {
-  const input = document.getElementById('input-song');
+  const input = $('input-song');
   const song  = input.value.trim();
-  if (!song)        return;
-  if (!currentGame) return;
+  if (!song || !currentGame) return;
 
-  const exists = currentGame.pool.some(s => s.toLowerCase() === song.toLowerCase());
-  if (exists) { showToast('This song is already in the pool!'); return; }
+  if (currentGame.pool.some(s => s.toLowerCase() === song.toLowerCase())) {
+    toast('This song is already in the pool!');
+    return;
+  }
 
-  await db.collection('games').doc(gameId).update({
+  await gameDoc().update({
     pool: firebase.firestore.FieldValue.arrayUnion(song)
   });
   input.value = '';
@@ -382,95 +341,80 @@ async function addSong() {
 
 async function removeSong(song) {
   if (!isHost) return;
-  await db.collection('games').doc(gameId).update({
+  await gameDoc().update({
     pool: firebase.firestore.FieldValue.arrayRemove(song)
   });
 }
 
 async function kickPlayer(pid) {
-  if (!isHost || !currentGame) return;
-  if (pid === playerId) return;
+  if (!isHost || !currentGame || pid === playerId) return;
   const p = currentGame.players?.[pid];
-  if (!p) return;
-  if (!confirm(`Kick ${p.name}?`)) return;
+  if (!p || !confirm(`Kick ${p.name}?`)) return;
 
-  await db.collection('games').doc(gameId).update({
+  await gameDoc().update({
     [`players.${pid}`]: firebase.firestore.FieldValue.delete()
   });
 }
 
 async function startGame() {
   if (!currentGame || currentGame.pool.length < 9) return;
-  await db.collection('games').doc(gameId).update({ status: 'playing' });
+  await gameDoc().update({ status: 'playing' });
 }
-
-// ── Card selection ─────────────────────────────────────────
 
 async function confirmCard() {
   if (cardSelection.size !== 9) return;
-  const selected = [...cardSelection];
-  await db.collection('games').doc(gameId).update({
-    [`players.${playerId}.card`]: selected
+  await gameDoc().update({
+    [`players.${playerId}.card`]: [...cardSelection]
   });
 }
-
-// ── Game: mark / unmark ────────────────────────────────────
 
 async function toggleSong(song) {
   if (!currentGame) return;
-  const isMarked = currentGame.markedSongs.includes(song);
-  await db.collection('games').doc(gameId).update({
-    markedSongs: isMarked
-      ? firebase.firestore.FieldValue.arrayRemove(song)
-      : firebase.firestore.FieldValue.arrayUnion(song)
-  });
+  const fn = currentGame.markedSongs.includes(song)
+    ? firebase.firestore.FieldValue.arrayRemove
+    : firebase.firestore.FieldValue.arrayUnion;
+  await gameDoc().update({ markedSongs: fn(song) });
 }
 
-// ── New game ───────────────────────────────────────────────
-
 function newGame() {
-  if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+  if (unsubGame) { unsubGame(); unsubGame = null; }
   clearSave();
   gameId        = null;
   currentGame   = null;
   prevWinner    = null;
   cardSelection = new Set();
   isHost        = false;
-  document.getElementById('win-banner').classList.add('hidden');
+  $('win-banner').classList.add('hidden');
   showScreen('screen-welcome');
   setWelcomeMode('chooser');
 }
 
-// ── Firebase listener ──────────────────────────────────────
-
+// Game subscription
 function listenToGame() {
-  if (unsubscribe) unsubscribe();
+  if (unsubGame) unsubGame();
 
-  unsubscribe = db.collection('games').doc(gameId).onSnapshot(snap => {
+  unsubGame = gameDoc().onSnapshot(snap => {
     if (!snap.exists) {
-      // Game was deleted (e.g. host left, admin terminated, or TTL cleared it)
-      showToast('Game ended.', 4000);
+      toast('Game ended.', 4000);
       newGame();
       return;
     }
-    const prev  = currentGame;
+
+    const prev = currentGame;
     currentGame = snap.data();
 
-    // Was I kicked?
     if (!currentGame.players?.[playerId]) {
-      showToast('You were removed from the game.', 4000);
+      toast('You were removed from the game.', 4000);
       newGame();
       return;
     }
 
     isHost = currentGame.hostId === playerId;
-    onGameUpdate(prev);
+    handleGameUpdate(prev);
   });
 }
 
-// ── Main update handler ────────────────────────────────────
-
-function onGameUpdate(prev) {
+function handleGameUpdate(prev) {
   const game = currentGame;
 
   if (game.status === 'lobby') {
@@ -480,7 +424,6 @@ function onGameUpdate(prev) {
   }
 
   const me = game.players?.[playerId];
-
   if (!me?.card) {
     renderCardSelect(game);
     showScreen('screen-select');
@@ -489,9 +432,9 @@ function onGameUpdate(prev) {
     showScreen('screen-game');
   }
 
-  if (me?.card && !me.hasWon && !game.winner) {
-    const win = checkBingo(me.card, game.markedSongs);
-    if (win) claimWin();
+  // Local bingo detection – the transaction below resolves races.
+  if (me?.card && !me.hasWon && !game.winner && checkBingo(me.card, game.markedSongs)) {
+    claimWin();
   }
 
   if (game.winnerName && game.winnerName !== prevWinner) {
@@ -500,10 +443,9 @@ function onGameUpdate(prev) {
   }
 }
 
-// ── Claim win (transaction to avoid race) ─────────────────
-
+// Transactional win claim — only the first writer wins if two players finish simultaneously.
 async function claimWin() {
-  const ref = db.collection('games').doc(gameId);
+  const ref = gameDoc();
   try {
     await db.runTransaction(async tx => {
       const snap = await tx.get(ref);
@@ -515,76 +457,66 @@ async function claimWin() {
         status:     'finished'
       });
     });
-  } catch (_) { /* ignore */ }
+  } catch {}
 }
 
-// ── Render: Lobby ──────────────────────────────────────────
-
+// Renderers
 function renderLobby(game) {
-  document.getElementById('lbl-game-code').textContent = gameId;
+  $('lbl-game-code').textContent = gameId;
 
   const players = Object.entries(game.players || {});
-  document.getElementById('lbl-player-count').textContent = players.length;
-  const ul = document.getElementById('list-players');
+  $('lbl-player-count').textContent = players.length;
+  const ul = $('list-players');
   ul.innerHTML = '';
-  players.forEach(([pid, p]) => {
-    const li = document.createElement('li');
-    const color = playerColor(pid);
+  for (const [pid, p] of players) {
     const isMe      = pid === playerId;
     const isHostRow = pid === game.hostId;
-    const kickBtn   = (isHost && !isHostRow && !isMe)
-      ? `<button class="btn-kick" data-pid="${esc(pid)}" title="Kick">✕</button>`
-      : '';
+    const canKick   = isHost && !isHostRow && !isMe;
+    const li = document.createElement('li');
     li.innerHTML = `
-      <span class="player-dot" style="background:${color}"></span>
+      <span class="player-dot" style="background:${playerColor(pid)}"></span>
       <span>${esc(p.name)}${isMe ? ' (you)' : ''}</span>
       ${isHostRow ? '<span class="host-tag">Host</span>' : ''}
-      ${kickBtn}
+      ${canKick ? `<button class="btn-kick" data-pid="${esc(pid)}" title="Kick">✕</button>` : ''}
     `;
     ul.appendChild(li);
-  });
+  }
 
   const pool = game.pool || [];
-  document.getElementById('lbl-pool-count').textContent = pool.length;
-  const poolUl = document.getElementById('list-pool');
+  $('lbl-pool-count').textContent = pool.length;
+  const poolUl = $('list-pool');
   poolUl.innerHTML = '';
-  pool.forEach(song => {
+  for (const song of pool) {
     const li = document.createElement('li');
     li.innerHTML = `
       <span>${esc(song)}</span>
       ${isHost ? `<button class="btn-remove" data-song="${esc(song)}" title="Remove">✕</button>` : ''}
     `;
     poolUl.appendChild(li);
-  });
+  }
 
-  const startBtn  = document.getElementById('btn-start');
-  const startHint = document.getElementById('lbl-start-hint');
-  document.getElementById('host-controls').classList.toggle('hidden', !isHost);
-  document.getElementById('player-waiting').classList.toggle('hidden', isHost);
+  $('host-controls').classList.toggle('hidden', !isHost);
+  $('player-waiting').classList.toggle('hidden', isHost);
 
   if (isHost) {
-    const enough = pool.length >= 9;
-    startBtn.disabled = !enough;
-    startBtn.textContent = enough
-      ? `Start Game (${pool.length} songs)`
-      : `Start Game`;
-    startHint.textContent = enough
+    const startBtn = $('btn-start');
+    const enough   = pool.length >= 9;
+    startBtn.disabled    = !enough;
+    startBtn.textContent = enough ? `Start Game (${pool.length} songs)` : 'Start Game';
+    $('lbl-start-hint').textContent = enough
       ? 'Everyone ready? Start the game!'
       : `Add at least ${9 - pool.length} more song${9 - pool.length === 1 ? '' : 's'}.`;
   }
 }
 
-// ── Render: Card selection ─────────────────────────────────
-
 function renderCardSelect(game) {
-  const grid = document.getElementById('pool-grid');
+  const grid = $('pool-grid');
   grid.innerHTML = '';
 
-  game.pool.forEach(song => {
+  for (const song of game.pool) {
     const btn = document.createElement('button');
-    btn.className = 'song-btn' + (cardSelection.has(song) ? ' selected' : '');
+    btn.className   = 'song-btn' + (cardSelection.has(song) ? ' selected' : '');
     btn.textContent = song;
-
     btn.addEventListener('click', () => {
       if (cardSelection.has(song)) {
         cardSelection.delete(song);
@@ -593,160 +525,152 @@ function renderCardSelect(game) {
         cardSelection.add(song);
         btn.classList.add('selected');
       }
-      const count = cardSelection.size;
-      document.getElementById('lbl-sel-count').textContent = count;
-      document.getElementById('btn-confirm').disabled = count !== 9;
+      updateSelectCounter();
     });
-
     grid.appendChild(btn);
-  });
+  }
 
-  const count = cardSelection.size;
-  document.getElementById('lbl-sel-count').textContent = count;
-  document.getElementById('btn-confirm').disabled = count !== 9;
+  updateSelectCounter();
 }
 
-// ── Render: Game board ─────────────────────────────────────
+function updateSelectCounter() {
+  const n = cardSelection.size;
+  $('lbl-sel-count').textContent = n;
+  $('btn-confirm').disabled = n !== 9;
+}
 
 function renderBoard(game, prev) {
-  const me          = game.players[playerId];
-  const card        = me.card;
-  const marked      = game.markedSongs || [];
-  const markedSet   = new Set(marked);
-  const winLine     = checkBingo(card, marked);
-  const winLineSet  = new Set(winLine || []);
+  const me        = game.players[playerId];
+  const card      = me.card;
+  const marked    = game.markedSongs || [];
+  const markedSet = new Set(marked);
+  const winLine   = checkBingo(card, marked);
+  const winSet    = new Set(winLine || []);
 
-  document.getElementById('lbl-code-game').textContent    = gameId;
-  document.getElementById('lbl-marked-count').textContent = marked.length;
-  document.getElementById('lbl-my-name').textContent      = `Your card – ${playerName}`;
+  $('lbl-code-game').textContent    = gameId;
+  $('lbl-marked-count').textContent = marked.length;
+  $('lbl-my-name').textContent      = `Your card – ${playerName}`;
 
-  const cardEl = document.getElementById('my-card');
+  const cardEl = $('my-card');
   cardEl.innerHTML = '';
   card.forEach((song, i) => {
     const cell = document.createElement('div');
     cell.className = 'bingo-cell';
     if (markedSet.has(song)) cell.classList.add('marked');
-    if (winLineSet.has(i))   cell.classList.add('winning');
+    if (winSet.has(i))       cell.classList.add('winning');
     cell.textContent = song;
     cell.addEventListener('click', () => toggleSong(song));
     cardEl.appendChild(cell);
   });
 
-  const prog = maxLineProgress(card, marked);
-  document.getElementById('lbl-my-progress').textContent = winLine
+  $('lbl-my-progress').textContent = winLine
     ? '🏆 BINGO!'
-    : `Best line: ${prog} / 3`;
+    : `Best line: ${maxLineProgress(card, marked)} / 3`;
 
-  const tagsEl = document.getElementById('marked-tags');
+  const tagsEl = $('marked-tags');
   tagsEl.innerHTML = '';
-  marked.forEach(song => {
+  for (const song of marked) {
     const span = document.createElement('span');
-    span.className = 'marked-tag';
+    span.className   = 'marked-tag';
     span.textContent = song;
     tagsEl.appendChild(span);
-  });
-
-  if (prev?.markedSongs) {
-    const fresh = marked.filter(s => !prev.markedSongs.includes(s));
-    fresh.forEach(s => showToast(`🎵 "${s}" played!`, 2500));
   }
 
-  const othersEl = document.getElementById('others-grid');
+  // Toast newly added songs (fires for everyone whenever someone marks).
+  if (prev?.markedSongs) {
+    for (const s of marked) {
+      if (!prev.markedSongs.includes(s)) toast(`🎵 "${s}" played!`, 2500);
+    }
+  }
+
+  const othersEl = $('others-grid');
   othersEl.innerHTML = '';
-  Object.entries(game.players).forEach(([pid, p]) => {
-    if (pid === playerId || !p.card) return;
-
-    const pProg     = maxLineProgress(p.card, marked);
-    const pWinLine  = checkBingo(p.card, marked);
-    const pWinSet   = new Set(pWinLine || []);
-    const isBingo   = !!pWinLine;
-    const isHot     = pProg >= 2 && !isBingo;
-    const color     = playerColor(pid);
-
-    const card = document.createElement('div');
-    card.className = 'other-card' + (isBingo ? ' bingo' : isHot ? ' hot' : '');
-
-    const badgeClass = isBingo ? 'bingo' : isHot ? 'hot' : '';
-    const badgeText  = isBingo ? '🏆 BINGO!' : `${pProg} / 3`;
-
-    card.innerHTML = `
-      <div class="other-header">
-        <span class="other-name">
-          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0"></span>
-          ${esc(p.name)}
-        </span>
-        <span class="prog-badge ${badgeClass}">${badgeText}</span>
-      </div>
-      <div class="mini-grid">
-        ${p.card.map((song, i) => `
-          <div class="mini-cell ${markedSet.has(song) ? (pWinSet.has(i) ? 'winning' : 'marked') : ''}">
-            ${esc(song)}
-          </div>
-        `).join('')}
-      </div>
-    `;
-
-    othersEl.appendChild(card);
-  });
+  for (const [pid, p] of Object.entries(game.players)) {
+    if (pid === playerId || !p.card) continue;
+    othersEl.appendChild(renderOtherCard(pid, p, marked, markedSet));
+  }
 }
 
-// ── Win banner ─────────────────────────────────────────────
+function renderOtherCard(pid, p, marked, markedSet) {
+  const prog    = maxLineProgress(p.card, marked);
+  const winLine = checkBingo(p.card, marked);
+  const winSet  = new Set(winLine || []);
+  const bingo   = !!winLine;
+  const hot     = prog >= 2 && !bingo;
+
+  const el = document.createElement('div');
+  el.className = 'other-card' + (bingo ? ' bingo' : hot ? ' hot' : '');
+
+  const badgeClass = bingo ? 'bingo' : hot ? 'hot' : '';
+  const badgeText  = bingo ? '🏆 BINGO!' : `${prog} / 3`;
+
+  el.innerHTML = `
+    <div class="other-header">
+      <span class="other-name">
+        <span class="other-dot" style="background:${playerColor(pid)}"></span>
+        ${esc(p.name)}
+      </span>
+      <span class="prog-badge ${badgeClass}">${badgeText}</span>
+    </div>
+    <div class="mini-grid">
+      ${p.card.map((song, i) => `
+        <div class="mini-cell ${markedSet.has(song) ? (winSet.has(i) ? 'winning' : 'marked') : ''}">${esc(song)}</div>
+      `).join('')}
+    </div>
+  `;
+  return el;
+}
 
 function showWinBanner(name, isMe) {
-  const banner = document.getElementById('win-banner');
-  const textEl = document.getElementById('win-text');
-
-  textEl.innerHTML = isMe
+  const banner = $('win-banner');
+  $('win-text').innerHTML = isMe
     ? '<div style="font-size:2rem;margin-bottom:4px">BINGO!</div><div>You won! 🎉</div>'
     : `<div style="font-size:1.6rem;margin-bottom:4px">BINGO!</div><div>${esc(name)} won!</div>`;
-
   banner.classList.remove('hidden');
-
   if (!isMe) setTimeout(() => banner.classList.add('hidden'), 7000);
 }
 
-// ── Admin flow ─────────────────────────────────────────────
-
+// Admin
 async function enterAdminFlow() {
-  // Stop player listeners
-  if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+  if (unsubGame) { unsubGame(); unsubGame = null; }
 
-  const user = auth.currentUser;
-  if (user && !user.isAnonymous && user.uid === ADMIN_UID) {
+  const u = auth.currentUser;
+  if (u && !u.isAnonymous && u.uid === ADMIN_UID) {
     isAdmin = true;
     openAdminPanel();
-  } else {
-    if (user && user.isAnonymous) await auth.signOut().catch(() => {});
-    isAdmin = false;
-    showScreen('screen-admin-login');
-    document.getElementById('input-admin-email').value = '';
-    document.getElementById('input-admin-pass').value  = '';
-    document.getElementById('input-admin-email').focus();
+    return;
   }
+
+  if (u && u.isAnonymous) await auth.signOut().catch(() => {});
+  isAdmin = false;
+  showScreen('screen-admin-login');
+  $('input-admin-email').value = '';
+  $('input-admin-pass').value  = '';
+  $('input-admin-email').focus();
 }
 
 async function adminLogin() {
-  const email = document.getElementById('input-admin-email').value.trim();
-  const pass  = document.getElementById('input-admin-pass').value;
-  if (!email || !pass) { showToast('Enter email and password.'); return; }
+  const email = $('input-admin-email').value.trim();
+  const pass  = $('input-admin-pass').value;
+  if (!email || !pass) { toast('Enter email and password.'); return; }
 
   try {
     const cred = await auth.signInWithEmailAndPassword(email, pass);
     if (cred.user.uid !== ADMIN_UID) {
       await auth.signOut();
-      showToast('Not authorized.', 4000);
+      toast('Not authorized.', 4000);
       return;
     }
     isAdmin = true;
     openAdminPanel();
   } catch (e) {
-    showToast('Login failed: ' + (e.message || 'unknown error'), 5000);
+    toast('Login failed: ' + (e.message || 'unknown error'), 5000);
   }
 }
 
 async function adminLogout() {
   if (unsubAdmin) { unsubAdmin(); unsubAdmin = null; }
-  try { await auth.signOut(); } catch (_) {}
+  try { await auth.signOut(); } catch {}
   isAdmin = false;
   location.hash = '';
 }
@@ -756,36 +680,32 @@ function openAdminPanel() {
   if (unsubAdmin) unsubAdmin();
   unsubAdmin = db.collection('games')
     .where('status', 'in', ['lobby', 'playing'])
-    .onSnapshot(renderAdminSessions, err => {
-      showToast('Admin listen error: ' + err.message, 5000);
-    });
+    .onSnapshot(renderAdminSessions, err => toast('Admin listen error: ' + err.message, 5000));
 }
 
 function renderAdminSessions(snap) {
-  const container = document.getElementById('admin-sessions');
-  const countEl   = document.getElementById('lbl-session-count');
-
+  const container = $('admin-sessions');
   const docs = snap.docs.slice().sort((a, b) => {
     const ta = a.data().createdAt?.toMillis?.() || 0;
     const tb = b.data().createdAt?.toMillis?.() || 0;
     return tb - ta;
   });
 
-  countEl.textContent = docs.length;
+  $('lbl-session-count').textContent = docs.length;
 
-  if (docs.length === 0) {
+  if (!docs.length) {
     container.innerHTML = '<p class="admin-empty">No active sessions.</p>';
     return;
   }
 
   container.innerHTML = '';
-  docs.forEach(doc => {
-    const g = doc.data();
-    const players = Object.values(g.players || {});
+  for (const doc of docs) {
+    const g        = doc.data();
+    const players  = Object.values(g.players || {});
     const hostName = g.players?.[g.hostId]?.name || '—';
 
     const card = document.createElement('div');
-    card.className = 'session-card';
+    card.className = `session-card status-${esc(g.status)}`;
     card.innerHTML = `
       <div class="session-head">
         <span class="session-code">${esc(doc.id)}</span>
@@ -804,15 +724,15 @@ function renderAdminSessions(snap) {
     `;
     card.querySelector('.btn-terminate').addEventListener('click', () => terminateGame(doc.id));
     container.appendChild(card);
-  });
+  }
 }
 
 async function terminateGame(id) {
   if (!confirm(`Terminate session ${id}? All players will be disconnected.`)) return;
   try {
     await db.collection('games').doc(id).delete();
-    showToast(`Session ${id} terminated.`, 3000);
+    toast(`Session ${id} terminated.`, 3000);
   } catch (e) {
-    showToast('Failed to terminate: ' + e.message, 5000);
+    toast('Failed to terminate: ' + e.message, 5000);
   }
 }
