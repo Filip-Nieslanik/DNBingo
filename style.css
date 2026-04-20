@@ -625,3 +625,230 @@ input[type="text"]:focus { border-color: var(--accent2); }
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 3px; }
+
+/* ======================================================
+   MODE CHOOSER (welcome step 1)
+   ====================================================== */
+.mode-chooser {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 8px;
+}
+@media (max-width: 500px) {
+  .mode-chooser { grid-template-columns: 1fr; }
+}
+
+.mode-card {
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px 18px;
+  cursor: pointer;
+  color: var(--text);
+  text-align: center;
+  transition: border-color .2s, background .2s, transform .1s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.mode-card:hover {
+  border-color: var(--accent2);
+  background: var(--surface2);
+}
+.mode-card:active { transform: scale(.98); }
+
+.mode-emoji { font-size: 2.4rem; line-height: 1; }
+.mode-title { font-size: 1.1rem; font-weight: 700; }
+.mode-subtitle { font-size: .8rem; color: var(--muted); line-height: 1.4; }
+
+.welcome-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.welcome-form h2 {
+  font-size: 1.2rem;
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+.back-link {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: .85rem;
+  text-align: left;
+  padding: 4px 0;
+  transition: color .15s;
+  text-decoration: none;
+  align-self: flex-start;
+}
+.back-link:hover { color: var(--text); }
+
+/* ======================================================
+   LOBBY – kick + leave
+   ====================================================== */
+.btn-kick {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: .95rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 4px;
+  transition: color .15s;
+  line-height: 1;
+}
+.btn-kick:hover { color: var(--accent); }
+
+#list-players li .btn-kick { margin-left: auto; }
+#list-players li .host-tag + .btn-kick { margin-left: 6px; }
+
+.leave-btn {
+  width: auto;
+  margin: 8px auto 0;
+  display: block;
+}
+
+/* ======================================================
+   ADMIN PANEL
+   ====================================================== */
+.admin-wrap {
+  max-width: 1000px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 22px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1.5px solid var(--border);
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.admin-header h2 {
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.admin-header .btn { width: auto; }
+
+.admin-sessions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.admin-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: var(--muted);
+  padding: 48px 20px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1.5px dashed var(--border);
+}
+
+.session-card {
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.session-card.status-playing { border-color: rgba(124,77,255,.4); }
+.session-card.status-lobby   { border-color: rgba(224,51,92,.3); }
+
+.session-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.session-code {
+  font-family: 'Courier New', monospace;
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: .15em;
+  color: var(--accent);
+}
+.session-status {
+  font-size: .7rem;
+  padding: 3px 9px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  font-weight: 700;
+}
+.session-status.status-lobby   { background: rgba(224,51,92,.18); color: var(--accent); }
+.session-status.status-playing { background: rgba(124,77,255,.18); color: var(--accent2); }
+
+.session-meta {
+  font-size: .82rem;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.session-meta strong { color: var(--text); font-weight: 600; }
+
+.session-players {
+  font-size: .78rem;
+  color: var(--muted);
+  padding: 6px 10px;
+  background: var(--surface2);
+  border-radius: var(--radius-sm);
+  word-break: break-word;
+}
+
+.btn-terminate {
+  width: 100%;
+  background: rgba(224,51,92,.14);
+  color: var(--accent);
+  border: 1px solid rgba(224,51,92,.35);
+  padding: 9px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: .85rem;
+  transition: background .15s;
+}
+.btn-terminate:hover { background: rgba(224,51,92,.28); }
+
+/* Admin login reuses .welcome-wrap */
+#screen-admin-login input[type="email"],
+#screen-admin-login input[type="password"] {
+  width: 100%;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 13px 16px;
+  font-size: .95rem;
+  outline: none;
+  transition: border-color .2s;
+}
+#screen-admin-login input[type="email"]::placeholder,
+#screen-admin-login input[type="password"]::placeholder { color: var(--muted); }
+#screen-admin-login input[type="email"]:focus,
+#screen-admin-login input[type="password"]:focus { border-color: var(--accent2); }
+
+#link-admin-back {
+  text-align: center;
+  align-self: center;
+  margin-top: 4px;
+}
+
+/* Admin session age label */
+.session-age { color: #9aa4b2; font-size: 0.85em; }

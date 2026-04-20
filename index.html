@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="cs">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -16,15 +16,35 @@
         <span class="logo-text">Music Bingo</span>
       </div>
 
-      <input id="input-name" type="text" placeholder="Tvoje jméno" maxlength="20" autocomplete="off">
+      <!-- Mode chooser (step 1) -->
+      <div id="welcome-chooser" class="mode-chooser">
+        <button id="btn-mode-create" class="mode-card">
+          <div class="mode-emoji">&#10133;</div>
+          <div class="mode-title">Create Game</div>
+          <div class="mode-subtitle">Start a new bingo session and invite friends</div>
+        </button>
+        <button id="btn-mode-join" class="mode-card">
+          <div class="mode-emoji">&#128101;</div>
+          <div class="mode-title">Join Game</div>
+          <div class="mode-subtitle">Enter a code to join an existing session</div>
+        </button>
+      </div>
 
-      <button id="btn-create" class="btn btn-primary">Vytvořit hru</button>
+      <!-- Create form (step 2a) -->
+      <div id="welcome-create" class="welcome-form hidden">
+        <button class="back-link" data-back="chooser">&#8592; Back</button>
+        <h2>Create New Game</h2>
+        <input id="input-name-create" type="text" placeholder="Your name" maxlength="20" autocomplete="off">
+        <button id="btn-create" class="btn btn-primary">Create Game</button>
+      </div>
 
-      <div class="divider"><span>nebo</span></div>
-
-      <div class="join-row">
-        <input id="input-code" type="text" placeholder="Kód hry (6 znaků)" maxlength="6" autocomplete="off">
-        <button id="btn-join" class="btn btn-secondary">Připojit se</button>
+      <!-- Join form (step 2b) -->
+      <div id="welcome-join" class="welcome-form hidden">
+        <button class="back-link" data-back="chooser">&#8592; Back</button>
+        <h2>Join Game</h2>
+        <input id="input-name-join" type="text" placeholder="Your name" maxlength="20" autocomplete="off">
+        <input id="input-code" type="text" placeholder="Game code (6 chars)" maxlength="6" autocomplete="off">
+        <button id="btn-join" class="btn btn-primary">Join</button>
       </div>
     </div>
   </div>
@@ -34,100 +54,115 @@
     <div class="lobby-wrap">
 
       <div class="code-banner">
-        Kód hry:&nbsp;<strong id="lbl-game-code"></strong>
-        <button id="btn-copy" class="btn-icon" title="Zkopírovat kód">&#128203;</button>
+        Game code:&nbsp;<strong id="lbl-game-code"></strong>
+        <button id="btn-copy" class="btn-icon" title="Copy code">&#128203;</button>
       </div>
 
       <div class="lobby-grid">
-
-        <!-- Players -->
         <section class="panel">
-          <h3>Hráči <span class="badge" id="lbl-player-count">0</span></h3>
+          <h3>Players <span class="badge" id="lbl-player-count">0</span></h3>
           <ul id="list-players"></ul>
         </section>
 
-        <!-- Song pool -->
         <section class="panel pool-panel">
-          <h3>Pool písniček <span class="badge" id="lbl-pool-count">0</span></h3>
+          <h3>Song pool <span class="badge" id="lbl-pool-count">0</span></h3>
           <div class="add-row">
-            <input id="input-song" type="text" placeholder="Název písničky…" maxlength="60" autocomplete="off">
-            <button id="btn-add-song" class="btn btn-secondary btn-sm">Přidat</button>
+            <input id="input-song" type="text" placeholder="Song name…" maxlength="60" autocomplete="off">
+            <button id="btn-add-song" class="btn btn-secondary btn-sm">Add</button>
           </div>
           <ul id="list-pool"></ul>
         </section>
-
       </div>
 
-      <!-- Host controls -->
       <div id="host-controls" class="hidden">
-        <button id="btn-start" class="btn btn-primary" disabled>Spustit hru</button>
-        <p id="lbl-start-hint" class="hint">Přidej aspoň 9 písniček.</p>
+        <button id="btn-start" class="btn btn-primary" disabled>Start Game</button>
+        <p id="lbl-start-hint" class="hint">Add at least 9 songs.</p>
       </div>
 
-      <!-- Player waiting -->
       <div id="player-waiting" class="hidden">
-        <p class="hint waiting">&#9203; Čekej, hostitel spouští hru…</p>
+        <p class="hint waiting">&#9203; Waiting for the host to start…</p>
       </div>
 
+      <button id="btn-leave-lobby" class="btn btn-ghost btn-sm leave-btn">Leave</button>
     </div>
   </div>
 
   <!-- ===== CARD SELECTION ===== -->
   <div id="screen-select" class="screen">
     <div class="select-wrap">
-      <h2>Vyber 9 písniček pro svou kartu</h2>
-      <p class="select-counter"><span id="lbl-sel-count">0</span> / 9 vybráno</p>
+      <h2>Pick 9 songs for your card</h2>
+      <p class="select-counter"><span id="lbl-sel-count">0</span> / 9 selected</p>
       <div id="pool-grid" class="pool-grid"></div>
-      <button id="btn-confirm" class="btn btn-primary" disabled>Potvrdit kartu</button>
+      <button id="btn-confirm" class="btn btn-primary" disabled>Confirm card</button>
     </div>
   </div>
 
   <!-- ===== GAME ===== -->
   <div id="screen-game" class="screen">
-
     <header class="game-header">
-      <span class="header-code">Kód: <strong id="lbl-code-game"></strong></span>
-      <span class="header-marked">&#127925; Zahráno: <strong id="lbl-marked-count">0</strong></span>
-      <button id="btn-new-game" class="btn btn-ghost btn-sm">Nova hra</button>
+      <span class="header-code">Code: <strong id="lbl-code-game"></strong></span>
+      <span class="header-marked">&#127925; Played: <strong id="lbl-marked-count">0</strong></span>
+      <button id="btn-new-game" class="btn btn-ghost btn-sm">New game</button>
     </header>
 
     <div class="game-body">
-
-      <!-- My card -->
       <section class="my-section">
-        <h3 id="lbl-my-name">Tvoje karta</h3>
+        <h3 id="lbl-my-name">Your card</h3>
         <div id="my-card" class="bingo-grid"></div>
         <p id="lbl-my-progress" class="progress-text"></p>
       </section>
 
-      <!-- Others -->
       <section class="others-section">
-        <h3>Ostatní hráči</h3>
+        <h3>Other players</h3>
         <div id="others-grid" class="others-grid"></div>
       </section>
-
     </div>
 
-    <!-- Marked songs log -->
     <footer class="marked-footer">
-      <span class="footer-label">Zahrané písničky:</span>
+      <span class="footer-label">Songs played:</span>
       <div id="marked-tags" class="marked-tags"></div>
     </footer>
+  </div>
 
+  <!-- ===== ADMIN LOGIN ===== -->
+  <div id="screen-admin-login" class="screen">
+    <div class="welcome-wrap">
+      <div class="logo">
+        <span class="logo-icon">&#128274;</span>
+        <span class="logo-text">Admin</span>
+      </div>
+      <input id="input-admin-email" type="email" placeholder="Email" autocomplete="email">
+      <input id="input-admin-pass" type="password" placeholder="Password" autocomplete="current-password">
+      <button id="btn-admin-login" class="btn btn-primary">Sign in</button>
+      <a href="#" class="back-link" id="link-admin-back">&#8592; Back to app</a>
+    </div>
+  </div>
+
+  <!-- ===== ADMIN PANEL ===== -->
+  <div id="screen-admin-panel" class="screen">
+    <div class="admin-wrap">
+      <header class="admin-header">
+        <h2>&#128274; Active Sessions <span class="badge" id="lbl-session-count">0</span> / 3</h2>
+        <button id="btn-admin-logout" class="btn btn-ghost btn-sm">Sign out</button>
+      </header>
+      <div id="admin-sessions" class="admin-sessions">
+        <p class="admin-empty">No active sessions.</p>
+      </div>
+    </div>
   </div>
 
   <!-- ===== WIN BANNER ===== -->
   <div id="win-banner" class="win-banner hidden">
     <div class="win-card">
-      <div class="confetti-row" id="confetti"></div>
       <div class="win-emoji">&#127881;</div>
       <div id="win-text" class="win-text"></div>
-      <button class="btn btn-primary btn-sm" id="btn-close-banner">Zavřít</button>
+      <button class="btn btn-primary btn-sm" id="btn-close-banner">Close</button>
     </div>
   </div>
 
   <!-- Firebase -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <script src="firebase-config.js"></script>
   <script src="app.js"></script>
