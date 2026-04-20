@@ -33,7 +33,9 @@ let isAdmin       = false;
 
 function generateCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  return Array.from({length: 6}, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  const array = new Uint32Array(6);
+  window.crypto.getRandomValues(array);
+  return Array.from(array, (val) => chars[val % chars.length]).join('');
 }
 
 function playerColor(id) {
