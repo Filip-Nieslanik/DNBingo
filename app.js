@@ -1,11 +1,16 @@
-// DNBingo client.
+// DNBingo client – v2.
 // Real-time 3x3 music bingo on top of Firestore.
-// Players sign in anonymously (Auth UID = playerId), admin uses email/password.
+// Pool tracks come from iTunes Search (primary) and MusicBrainz (fallback);
+// players sign in anonymously (Auth UID = playerId), admin uses email/password.
 
-const ADMIN_UID        = 'bNAAXb9LreTJjuKQLjRBlLOUH2X2';
-const MAX_ACTIVE_GAMES = 3;
+const ADMIN_UID         = 'bNAAXb9LreTJjuKQLjRBlLOUH2X2';
+const MAX_ACTIVE_GAMES  = 3;
+const HOST_HEARTBEAT_MS = 10_000;   // host touches hostLastSeen every 10s
+const HOST_GRACE_MS     = 30_000;   // >30s without heartbeat → "disconnected"
+const SEARCH_DEBOUNCE   = 400;
+const SEARCH_LIMIT      = 8;
 
-// Winning lines as cell indices on a 3x3 grid.
+// Winning lines on a 3x3 grid (cell indices).
 const LINES = [
   [0,1,2],[3,4,5],[6,7,8],
   [0,3,6],[1,4,7],[2,5,8],
@@ -30,11 +35,21 @@ let prevWinner    = null;
 let unsubGame     = null;
 let unsubAdmin    = null;
 
+// Host heartbeat + grace-period UI ticker
+let hostBeatTimer = null;
+let graceTicker   = null;
+
+// Search request race guard
+let searchSeq     = 0;
+
 // Shorthands
 const $ = id => document.getElementById(id);
 const gameDoc = () => db.collection('games').doc(gameId);
 
+// ---------------------------------------------------------------------------
 // Helpers
+// ---------------------------------------------------------------------------
+
 function generateCode() {
   // CSPRNG – game codes must not be predictable.
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -89,23 +104,126 @@ function formatAge(ts) {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
+function debounce(fn, ms) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+function initialsOf(title, artist) {
+  const s = (artist || title || '??').trim();
+  const parts = s.split(/\s+/).slice(0, 2);
+  return parts.map(p => p[0]?.toUpperCase() || '').join('') || '??';
+}
+
+function coverPlaceholder(track) {
+  // Deterministic colored tile for tracks without artwork.
+  const seed = (track.id || track.title || 'x');
+  let h = 0;
+  for (const c of seed) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  const hue = h % 360;
+  return `linear-gradient(135deg, hsl(${hue} 70% 22%), hsl(${(hue + 40) % 360} 70% 12%))`;
+}
+
+function coverStyle(track) {
+  if (track.cover) return `background-image:url('${esc(track.cover)}')`;
+  return `background:${coverPlaceholder(track)}`;
+}
+
+// Copy-to-clipboard with iOS/Safari fallback.
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity  = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch { return false; }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Bingo logic
-function checkBingo(card, marked) {
+// ---------------------------------------------------------------------------
+
+function checkBingo(card, markedSet) {
   if (!card || card.length !== 9) return null;
-  const m = new Set(marked);
   for (const line of LINES) {
-    if (line.every(i => m.has(card[i]))) return line;
+    if (line.every(i => markedSet.has(card[i]))) return line;
   }
   return null;
 }
 
-function maxLineProgress(card, marked) {
+function maxLineProgress(card, markedSet) {
   if (!card || card.length !== 9) return 0;
-  const m = new Set(marked);
-  return Math.max(...LINES.map(line => line.filter(i => m.has(card[i])).length));
+  return Math.max(...LINES.map(line => line.filter(i => markedSet.has(card[i])).length));
 }
 
+// ---------------------------------------------------------------------------
+// Search – iTunes primary, MusicBrainz fallback
+// ---------------------------------------------------------------------------
+
+async function searchITunes(query) {
+  const url = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}`
+            + `&media=music&entity=song&limit=${SEARCH_LIMIT}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('iTunes ' + r.status);
+  const data = await r.json();
+  return (data.results || []).map(t => ({
+    id:     `it:${t.trackId}`,
+    title:  t.trackName,
+    artist: t.artistName,
+    album:  t.collectionName || '',
+    cover:  t.artworkUrl100 ? t.artworkUrl100.replace('100x100bb', '300x300bb') : null,
+    source: 'itunes'
+  }));
+}
+
+async function searchMusicBrainz(query) {
+  const url = `https://musicbrainz.org/ws/2/recording/?query=${encodeURIComponent(query)}`
+            + `&limit=${SEARCH_LIMIT}&fmt=json`;
+  const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  if (!r.ok) throw new Error('MusicBrainz ' + r.status);
+  const data = await r.json();
+  return (data.recordings || []).map(rec => {
+    const releaseId = rec.releases?.[0]?.id || null;
+    return {
+      id:     `mb:${rec.id}`,
+      title:  rec.title,
+      artist: rec['artist-credit']?.[0]?.name || '—',
+      album:  rec.releases?.[0]?.title || '',
+      cover:  releaseId ? `https://coverartarchive.org/release/${releaseId}/front-250` : null,
+      source: 'musicbrainz'
+    };
+  });
+}
+
+async function searchTracks(query) {
+  try {
+    const primary = await searchITunes(query);
+    if (primary.length) return primary;
+  } catch { /* fall through to MB */ }
+  try {
+    return await searchMusicBrainz(query);
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Auth
+// ---------------------------------------------------------------------------
+
 async function ensureAnonymousAuth() {
   const u = auth.currentUser;
   if (u && u.isAnonymous) { playerId = u.uid; return; }
@@ -120,7 +238,10 @@ function authStateReady() {
   });
 }
 
+// ---------------------------------------------------------------------------
 // Init
+// ---------------------------------------------------------------------------
+
 document.addEventListener('DOMContentLoaded', async () => {
   $('btn-mode-create').addEventListener('click', () => setWelcomeMode('create'));
   $('btn-mode-join').addEventListener('click',   () => setWelcomeMode('join'));
@@ -134,17 +255,27 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('input-name-join').addEventListener('keydown',   e => e.key === 'Enter' && joinGame());
   $('input-code').addEventListener('keydown',        e => e.key === 'Enter' && joinGame());
 
-  $('btn-copy').addEventListener('click', () => {
-    navigator.clipboard.writeText(gameId).then(() => toast('Code copied!'));
+  $('btn-copy').addEventListener('click', async () => {
+    const ok = await copyText(gameId);
+    toast(ok ? 'Code copied!' : 'Copy failed – select manually.');
   });
-  $('btn-add-song').addEventListener('click', addSong);
-  $('input-song').addEventListener('keydown', e => e.key === 'Enter' && addSong());
+
+  // Search box in lobby
+  const searchInput = $('input-search');
+  searchInput.addEventListener('input', debounce(onSearchInput, SEARCH_DEBOUNCE));
+  searchInput.addEventListener('focus', () => {
+    if (searchInput.value.trim()) onSearchInput();
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.search-box')) hideSearchResults();
+  });
+
   $('btn-start').addEventListener('click', startGame);
   $('btn-leave-lobby').addEventListener('click', leaveGame);
 
   $('list-pool').addEventListener('click', e => {
     const btn = e.target.closest('.btn-remove');
-    if (btn) removeSong(btn.dataset.song);
+    if (btn) removeTrack(btn.dataset.id);
   });
   $('list-players').addEventListener('click', e => {
     const btn = e.target.closest('.btn-kick');
@@ -153,7 +284,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   $('btn-confirm').addEventListener('click', confirmCard);
   $('btn-new-game').addEventListener('click', newGame);
+  $('btn-end-game').addEventListener('click', endGameHost);
   $('btn-close-banner').addEventListener('click', () => $('win-banner').classList.add('hidden'));
+
+  // Played bottom sheet
+  $('btn-open-played').addEventListener('click', openPlayedSheet);
+  $('btn-close-played').addEventListener('click', closePlayedSheet);
+  $('played-backdrop').addEventListener('click', closePlayedSheet);
+  $('input-played-filter').addEventListener('input', renderPlayedSheet);
 
   $('btn-admin-login').addEventListener('click', adminLogin);
   $('input-admin-pass').addEventListener('keydown', e => e.key === 'Enter' && adminLogin());
@@ -164,6 +302,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   window.addEventListener('hashchange', route);
+  window.addEventListener('online',  () => $('connection-banner').classList.add('hidden'));
+  window.addEventListener('offline', () => {
+    $('connection-banner').textContent = 'You are offline. Changes will sync when reconnected.';
+    $('connection-banner').classList.remove('hidden');
+  });
 
   await authStateReady();
   await route();
@@ -190,7 +333,6 @@ function setWelcomeMode(mode) {
   $('welcome-chooser').classList.toggle('hidden', mode !== 'chooser');
   $('welcome-create').classList.toggle('hidden',  mode !== 'create');
   $('welcome-join').classList.toggle('hidden',    mode !== 'join');
-
   if (mode === 'create') $('input-name-create').focus();
   if (mode === 'join')   $('input-name-join').focus();
 }
@@ -204,7 +346,9 @@ async function tryReconnect() {
   if (!savedId || !savedName) return;
 
   try {
-    const snap = await db.collection('games').doc(savedId).get();
+    // Force server read – never trust the Firestore offline cache here,
+    // otherwise a deleted game still reconnects from stale data.
+    const snap = await db.collection('games').doc(savedId).get({ source: 'server' });
     if (!snap.exists || !snap.data().players?.[playerId]) {
       clearSave();
       return;
@@ -213,7 +357,9 @@ async function tryReconnect() {
     playerName = savedName;
     isHost     = snap.data().hostId === playerId;
     listenToGame();
-  } catch { /* offline or rules reject — stay on welcome */ }
+  } catch {
+    // Offline or rules reject – stay on welcome, don't drop the save yet.
+  }
 }
 
 function clearSave() {
@@ -221,7 +367,10 @@ function clearSave() {
   localStorage.removeItem('bingo_name');
 }
 
+// ---------------------------------------------------------------------------
 // Create / join / leave
+// ---------------------------------------------------------------------------
+
 async function createGame() {
   const name = $('input-name-create').value.trim();
   if (!name) { toast('Please enter your name!'); return; }
@@ -230,14 +379,16 @@ async function createGame() {
 
   let active;
   try {
-    active = await db.collection('games').where('status', 'in', ['lobby', 'playing']).get();
+    active = await db.collection('games')
+      .where('status', 'in', ['lobby', 'playing'])
+      .get({ source: 'server' });
   } catch {
     toast('Connection error.');
     return;
   }
 
   // If the same user already hosts a game, replace it instead of stacking.
-  const myOwn = active.docs.find(d => d.data().hostId === playerId);
+  const myOwn       = active.docs.find(d => d.data().hostId === playerId);
   const othersCount = active.size - (myOwn ? 1 : 0);
 
   if (othersCount >= MAX_ACTIVE_GAMES) {
@@ -251,45 +402,64 @@ async function createGame() {
 
   playerName = name;
   isHost     = true;
-  gameId     = generateCode();
+
+  // Retry on the astronomically unlikely code collision.
+  let created = false;
+  for (let attempt = 0; attempt < 5 && !created; attempt++) {
+    const candidate = generateCode();
+    try {
+      await db.collection('games').doc(candidate).set({
+        hostId:       playerId,
+        status:       'lobby',
+        version:      2,
+        pool:         [],
+        markedIds:    [],
+        players:      { [playerId]: { name, card: null, hasWon: false } },
+        winner:       null,
+        winnerName:   null,
+        hostLastSeen: firebase.firestore.FieldValue.serverTimestamp(),
+        createdAt:    firebase.firestore.FieldValue.serverTimestamp()
+      });
+      gameId = candidate;
+      created = true;
+    } catch {
+      // Code collision or rules reject – try again with a new code.
+    }
+  }
+
+  if (!created) { toast('Failed to create game.'); return; }
 
   localStorage.setItem('bingo_gid',  gameId);
   localStorage.setItem('bingo_name', name);
 
-  try {
-    await gameDoc().set({
-      hostId:      playerId,
-      status:      'lobby',
-      pool:        [],
-      markedSongs: [],
-      players:     { [playerId]: { name, card: null, hasWon: false } },
-      winner:      null,
-      winnerName:  null,
-      createdAt:   firebase.firestore.FieldValue.serverTimestamp()
-    });
-  } catch {
-    toast('Failed to create game.');
-    clearSave();
-    return;
-  }
-
+  startHostHeartbeat();
   listenToGame();
 }
 
 async function joinGame() {
-  const name = $('input-name-join').value.trim();
-  const code = $('input-code').value.trim().toUpperCase();
-  if (!name) { toast('Please enter your name!'); return; }
-  if (!code) { toast('Please enter game code!'); return; }
+  const rawName = $('input-name-join').value.trim();
+  const code    = $('input-code').value.trim().toUpperCase();
+  if (!rawName) { toast('Please enter your name!'); return; }
+  if (!code)    { toast('Please enter game code!'); return; }
 
   await ensureAnonymousAuth();
 
   let snap;
-  try { snap = await db.collection('games').doc(code).get(); }
+  try { snap = await db.collection('games').doc(code).get({ source: 'server' }); }
   catch { toast('Connection error.'); return; }
 
   if (!snap.exists)                   { toast('Game not found.'); return; }
   if (snap.data().status !== 'lobby') { toast('Game already started or finished.'); return; }
+
+  // Avoid name collisions by appending (2), (3)…
+  const existingNames = new Set(
+    Object.entries(snap.data().players || {})
+      .filter(([pid]) => pid !== playerId)
+      .map(([, p]) => p.name)
+  );
+  let name = rawName;
+  let i = 2;
+  while (existingNames.has(name)) name = `${rawName} (${i++})`;
 
   playerName = name;
   gameId     = code;
@@ -302,18 +472,24 @@ async function joinGame() {
     [`players.${playerId}`]: { name, card: null, hasWon: false }
   });
 
+  if (isHost) startHostHeartbeat();
   listenToGame();
 }
 
 async function leaveGame() {
   if (!gameId) { newGame(); return; }
-  const id = gameId;
+  const id      = gameId;
   const wasHost = isHost;
+  stopHostHeartbeat();
   if (unsubGame) { unsubGame(); unsubGame = null; }
 
   try {
     if (wasHost) {
-      await db.collection('games').doc(id).delete();
+      // Leaving as host keeps the game alive during grace window – the admin
+      // or an explicit End Game ends it. We just drop ourselves as a player.
+      await db.collection('games').doc(id).update({
+        [`players.${playerId}`]: firebase.firestore.FieldValue.delete()
+      });
     } else {
       await db.collection('games').doc(id).update({
         [`players.${playerId}`]: firebase.firestore.FieldValue.delete()
@@ -324,28 +500,175 @@ async function leaveGame() {
   newGame();
 }
 
-// Lobby actions
-async function addSong() {
-  const input = $('input-song');
-  const song  = input.value.trim();
-  if (!song || !currentGame) return;
+async function endGameHost() {
+  if (!gameId || !isHost) return;
+  if (!confirm('End the game for everyone?')) return;
+  const id = gameId;
+  stopHostHeartbeat();
+  if (unsubGame) { unsubGame(); unsubGame = null; }
+  try { await db.collection('games').doc(id).delete(); } catch {}
+  newGame();
+}
 
-  if (currentGame.pool.some(s => s.toLowerCase() === song.toLowerCase())) {
-    toast('This song is already in the pool!');
+// ---------------------------------------------------------------------------
+// Host heartbeat
+// ---------------------------------------------------------------------------
+
+function startHostHeartbeat() {
+  stopHostHeartbeat();
+  const beat = () => {
+    if (!gameId || !isHost) return;
+    gameDoc().update({
+      hostLastSeen: firebase.firestore.FieldValue.serverTimestamp()
+    }).catch(() => {});
+  };
+  beat();
+  hostBeatTimer = setInterval(beat, HOST_HEARTBEAT_MS);
+}
+
+function stopHostHeartbeat() {
+  if (hostBeatTimer) { clearInterval(hostBeatTimer); hostBeatTimer = null; }
+}
+
+function updateGraceBanner() {
+  if (!currentGame || isHost) {
+    $('host-grace-banner').classList.add('hidden');
+    return;
+  }
+  const seen = currentGame.hostLastSeen?.toMillis?.();
+  if (!seen) { $('host-grace-banner').classList.add('hidden'); return; }
+  const age = Date.now() - seen;
+  if (age > HOST_GRACE_MS) {
+    const sec = Math.floor(age / 1000);
+    $('host-grace-banner').textContent =
+      `Host hasn't pinged in ${sec}s – they may have disconnected.`;
+    $('host-grace-banner').classList.remove('hidden');
+  } else {
+    $('host-grace-banner').classList.add('hidden');
+  }
+}
+
+function startGraceTicker() {
+  if (graceTicker) return;
+  graceTicker = setInterval(updateGraceBanner, 5000);
+}
+
+function stopGraceTicker() {
+  if (graceTicker) { clearInterval(graceTicker); graceTicker = null; }
+  $('host-grace-banner').classList.add('hidden');
+}
+
+// ---------------------------------------------------------------------------
+// Search UI
+// ---------------------------------------------------------------------------
+
+async function onSearchInput() {
+  const q = $('input-search').value.trim();
+  const resultsEl = $('search-results');
+  if (!q) { hideSearchResults(); return; }
+
+  const mySeq = ++searchSeq;
+  resultsEl.innerHTML = '<div class="search-empty">Searching…</div>';
+  resultsEl.classList.remove('hidden');
+
+  const results = await searchTracks(q);
+  if (mySeq !== searchSeq) return;  // a newer query superseded this one
+
+  renderSearchResults(results, q);
+}
+
+function renderSearchResults(results, query) {
+  const resultsEl = $('search-results');
+  const existing  = new Set((currentGame?.pool || []).map(t => t.id));
+
+  if (!results.length) {
+    resultsEl.innerHTML = `
+      <div class="search-empty">No matches.</div>
+      <button class="search-manual">Add "${esc(query)}" as plain text</button>
+    `;
+    resultsEl.querySelector('.search-manual').addEventListener('click', () => {
+      addManualTrack(query);
+    });
+    resultsEl.classList.remove('hidden');
     return;
   }
 
-  await gameDoc().update({
-    pool: firebase.firestore.FieldValue.arrayUnion(song)
+  resultsEl.innerHTML = results.map(t => `
+    <button class="search-result ${existing.has(t.id) ? 'added' : ''}" data-id="${esc(t.id)}">
+      <div class="cover-sm" style="${coverStyle(t)}">${t.cover ? '' : esc(initialsOf(t.title, t.artist))}</div>
+      <div class="search-meta">
+        <div class="search-title">${esc(t.title)}</div>
+        <div class="search-artist">${esc(t.artist)}${t.album ? ' · ' + esc(t.album) : ''}</div>
+      </div>
+      <span class="search-add">${existing.has(t.id) ? '✓' : '+'}</span>
+    </button>
+  `).join('');
+
+  resultsEl.querySelectorAll('.search-result').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id    = btn.dataset.id;
+      const track = results.find(t => t.id === id);
+      if (track) addTrack(track);
+    });
   });
-  input.value = '';
-  input.focus();
+  resultsEl.classList.remove('hidden');
 }
 
-async function removeSong(song) {
-  if (!isHost) return;
+function hideSearchResults() {
+  $('search-results').classList.add('hidden');
+}
+
+// ---------------------------------------------------------------------------
+// Pool actions
+// ---------------------------------------------------------------------------
+
+async function addTrack(track) {
+  if (!currentGame) return;
+  if (currentGame.pool.some(t => t.id === track.id)) {
+    toast('Already in the pool.');
+    return;
+  }
+  try {
+    await gameDoc().update({
+      pool: firebase.firestore.FieldValue.arrayUnion(track)
+    });
+    $('input-search').value = '';
+    hideSearchResults();
+    $('input-search').focus();
+  } catch {
+    toast('Failed to add track.');
+  }
+}
+
+async function addManualTrack(title) {
+  const t = title.trim();
+  if (!t || !currentGame) return;
+  const track = {
+    id:     `manual:${t.toLowerCase()}`,
+    title:  t,
+    artist: '—',
+    album:  '',
+    cover:  null,
+    source: 'manual'
+  };
+  if (currentGame.pool.some(p => p.id === track.id)) {
+    toast('Already in the pool.');
+    return;
+  }
   await gameDoc().update({
-    pool: firebase.firestore.FieldValue.arrayRemove(song)
+    pool: firebase.firestore.FieldValue.arrayUnion(track)
+  }).catch(() => toast('Failed to add track.'));
+  $('input-search').value = '';
+  hideSearchResults();
+  $('input-search').focus();
+}
+
+async function removeTrack(id) {
+  if (!isHost || !currentGame) return;
+  const track = currentGame.pool.find(t => t.id === id);
+  if (!track) return;
+  await gameDoc().update({
+    pool: firebase.firestore.FieldValue.arrayRemove(track)
   });
 }
 
@@ -353,7 +676,6 @@ async function kickPlayer(pid) {
   if (!isHost || !currentGame || pid === playerId) return;
   const p = currentGame.players?.[pid];
   if (!p || !confirm(`Kick ${p.name}?`)) return;
-
   await gameDoc().update({
     [`players.${pid}`]: firebase.firestore.FieldValue.delete()
   });
@@ -371,16 +693,19 @@ async function confirmCard() {
   });
 }
 
-async function toggleSong(song) {
+async function toggleMark(trackId) {
   if (!currentGame) return;
-  const fn = currentGame.markedSongs.includes(song)
+  const marked = currentGame.markedIds || [];
+  const fn = marked.includes(trackId)
     ? firebase.firestore.FieldValue.arrayRemove
     : firebase.firestore.FieldValue.arrayUnion;
-  await gameDoc().update({ markedSongs: fn(song) });
+  await gameDoc().update({ markedIds: fn(trackId) });
 }
 
 function newGame() {
   if (unsubGame) { unsubGame(); unsubGame = null; }
+  stopHostHeartbeat();
+  stopGraceTicker();
   clearSave();
   gameId        = null;
   currentGame   = null;
@@ -388,13 +713,18 @@ function newGame() {
   cardSelection = new Set();
   isHost        = false;
   $('win-banner').classList.add('hidden');
+  closePlayedSheet();
   showScreen('screen-welcome');
   setWelcomeMode('chooser');
 }
 
-// Game subscription
+// ---------------------------------------------------------------------------
+// Subscription
+// ---------------------------------------------------------------------------
+
 function listenToGame() {
   if (unsubGame) unsubGame();
+  startGraceTicker();
 
   unsubGame = gameDoc().onSnapshot(snap => {
     if (!snap.exists) {
@@ -403,7 +733,7 @@ function listenToGame() {
       return;
     }
 
-    const prev = currentGame;
+    const prev  = currentGame;
     currentGame = snap.data();
 
     if (!currentGame.players?.[playerId]) {
@@ -412,8 +742,16 @@ function listenToGame() {
       return;
     }
 
+    const wasHost = isHost;
     isHost = currentGame.hostId === playerId;
+    if (isHost && !wasHost) startHostHeartbeat();
+    if (!isHost && wasHost) stopHostHeartbeat();
+
     handleGameUpdate(prev);
+    updateGraceBanner();
+  }, err => {
+    // Snapshot listener can error on rule changes, auth expiry, etc.
+    toast('Connection lost: ' + err.message, 4000);
   });
 }
 
@@ -426,17 +764,22 @@ function handleGameUpdate(prev) {
     return;
   }
 
-  const me = game.players?.[playerId];
+  const me        = game.players?.[playerId];
+  const markedSet = new Set(game.markedIds || []);
+
   if (!me?.card) {
     renderCardSelect(game);
     showScreen('screen-select');
   } else {
-    renderBoard(game, prev);
+    renderBoard(game, prev, markedSet);
     showScreen('screen-game');
   }
 
-  // Local bingo detection – the transaction below resolves races.
-  if (me?.card && !me.hasWon && !game.winner && checkBingo(me.card, game.markedSongs)) {
+  // Refresh open played sheet in real time.
+  if (!$('played-sheet').classList.contains('hidden')) renderPlayedSheet();
+
+  // Local bingo detection – the transaction resolves ties.
+  if (me?.card && !me.hasWon && !game.winner && checkBingo(me.card, markedSet)) {
     claimWin();
   }
 
@@ -446,7 +789,7 @@ function handleGameUpdate(prev) {
   }
 }
 
-// Transactional win claim — only the first writer wins if two players finish simultaneously.
+// Transactional win claim – only the first writer wins on simultaneous bingo.
 async function claimWin() {
   const ref = gameDoc();
   try {
@@ -463,7 +806,10 @@ async function claimWin() {
   } catch {}
 }
 
+// ---------------------------------------------------------------------------
 // Renderers
+// ---------------------------------------------------------------------------
+
 function renderLobby(game) {
   $('lbl-game-code').textContent = gameId;
 
@@ -489,11 +835,15 @@ function renderLobby(game) {
   $('lbl-pool-count').textContent = pool.length;
   const poolUl = $('list-pool');
   poolUl.innerHTML = '';
-  for (const song of pool) {
+  for (const track of pool) {
     const li = document.createElement('li');
     li.innerHTML = `
-      <span>${esc(song)}</span>
-      ${isHost ? `<button class="btn-remove" data-song="${esc(song)}" title="Remove">✕</button>` : ''}
+      <div class="cover-sm" style="${coverStyle(track)}">${track.cover ? '' : esc(initialsOf(track.title, track.artist))}</div>
+      <div class="pool-meta">
+        <div class="pool-title">${esc(track.title)}</div>
+        <div class="pool-artist">${esc(track.artist)}</div>
+      </div>
+      ${isHost ? `<button class="btn-remove" data-id="${esc(track.id)}" title="Remove">✕</button>` : ''}
     `;
     poolUl.appendChild(li);
   }
@@ -516,16 +866,24 @@ function renderCardSelect(game) {
   const grid = $('pool-grid');
   grid.innerHTML = '';
 
-  for (const song of game.pool) {
+  // Drop selections whose tracks no longer exist in the pool.
+  const poolIds = new Set(game.pool.map(t => t.id));
+  for (const id of cardSelection) if (!poolIds.has(id)) cardSelection.delete(id);
+
+  for (const track of game.pool) {
     const btn = document.createElement('button');
-    btn.className   = 'song-btn' + (cardSelection.has(song) ? ' selected' : '');
-    btn.textContent = song;
+    btn.className = 'track-card' + (cardSelection.has(track.id) ? ' selected' : '');
+    btn.innerHTML = `
+      <div class="cover-lg" style="${coverStyle(track)}">${track.cover ? '' : esc(initialsOf(track.title, track.artist))}</div>
+      <div class="track-title">${esc(track.title)}</div>
+      <div class="track-artist">${esc(track.artist)}</div>
+    `;
     btn.addEventListener('click', () => {
-      if (cardSelection.has(song)) {
-        cardSelection.delete(song);
+      if (cardSelection.has(track.id)) {
+        cardSelection.delete(track.id);
         btn.classList.remove('selected');
       } else if (cardSelection.size < 9) {
-        cardSelection.add(song);
+        cardSelection.add(track.id);
         btn.classList.add('selected');
       }
       updateSelectCounter();
@@ -542,61 +900,77 @@ function updateSelectCounter() {
   $('btn-confirm').disabled = n !== 9;
 }
 
-function renderBoard(game, prev) {
-  const me        = game.players[playerId];
-  const card      = me.card;
-  const marked    = game.markedSongs || [];
-  const markedSet = new Set(marked);
-  const winLine   = checkBingo(card, marked);
-  const winSet    = new Set(winLine || []);
+function trackById(game, id) {
+  return game.pool.find(t => t.id === id) || null;
+}
+
+function renderBoard(game, prev, markedSet) {
+  const me      = game.players[playerId];
+  const card    = me.card;
+  const winLine = checkBingo(card, markedSet);
+  const winSet  = new Set(winLine || []);
 
   $('lbl-code-game').textContent    = gameId;
-  $('lbl-marked-count').textContent = marked.length;
+  $('lbl-marked-count').textContent = (game.markedIds || []).length;
   $('lbl-my-name').textContent      = `Your card – ${playerName}`;
 
   const cardEl = $('my-card');
   cardEl.innerHTML = '';
-  card.forEach((song, i) => {
+  card.forEach((trackId, i) => {
+    const track = trackById(game, trackId);
+    if (!track) return;  // removed from pool after game started (unlikely)
     const cell = document.createElement('div');
     cell.className = 'bingo-cell';
-    if (markedSet.has(song)) cell.classList.add('marked');
-    if (winSet.has(i))       cell.classList.add('winning');
-    cell.textContent = song;
-    cell.addEventListener('click', () => toggleSong(song));
+    if (markedSet.has(trackId)) cell.classList.add('marked');
+    if (winSet.has(i))          cell.classList.add('winning');
+    cell.style.cssText = coverStyle(track);
+    cell.innerHTML = `
+      <div class="cell-overlay">
+        <div class="cell-title">${esc(track.title)}</div>
+        <div class="cell-artist">${esc(track.artist)}</div>
+      </div>
+    `;
+    cell.addEventListener('click', () => toggleMark(trackId));
     cardEl.appendChild(cell);
   });
 
   $('lbl-my-progress').textContent = winLine
     ? 'BINGO!'
-    : `Best line: ${maxLineProgress(card, marked)} / 3`;
+    : `Best line: ${maxLineProgress(card, markedSet)} / 3`;
+
+  // Toast newly marked tracks (once per player, triggered by any mark).
+  if (prev?.markedIds) {
+    const prevSet = new Set(prev.markedIds);
+    for (const id of game.markedIds || []) {
+      if (!prevSet.has(id)) {
+        const t = trackById(game, id) || trackById(prev, id);
+        if (t) toast(`"${t.title}" played`, 2500);
+      }
+    }
+  }
 
   const tagsEl = $('marked-tags');
   tagsEl.innerHTML = '';
-  for (const song of marked) {
+  for (const id of game.markedIds || []) {
+    const t = trackById(game, id);
+    if (!t) continue;
     const span = document.createElement('span');
     span.className   = 'marked-tag';
-    span.textContent = song;
+    span.textContent = t.title;
     tagsEl.appendChild(span);
-  }
-
-  // Toast each newly marked song (once per player, triggered by any mark).
-  if (prev?.markedSongs) {
-    for (const s of marked) {
-      if (!prev.markedSongs.includes(s)) toast(`"${s}" played`, 2500);
-    }
   }
 
   const othersEl = $('others-grid');
   othersEl.innerHTML = '';
   for (const [pid, p] of Object.entries(game.players)) {
     if (pid === playerId || !p.card) continue;
-    othersEl.appendChild(renderOtherCard(pid, p, marked, markedSet));
+    othersEl.appendChild(renderOtherCard(pid, p, game, markedSet));
   }
 }
 
-function renderOtherCard(pid, p, marked, markedSet) {
-  const prog    = maxLineProgress(p.card, marked);
-  const winLine = checkBingo(p.card, marked);
+function renderOtherCard(pid, p, game, markedSet) {
+  const prog    = maxLineProgress(p.card, markedSet);
+  const winLine = checkBingo(p.card, markedSet);
   const winSet  = new Set(winLine || []);
   const bingo   = !!winLine;
   const hot     = prog >= 2 && !bingo;
@@ -616,9 +990,12 @@ function renderOtherCard(pid, p, marked, markedSet) {
       <span class="prog-badge ${badgeClass}">${badgeText}</span>
     </div>
     <div class="mini-grid">
-      ${p.card.map((song, i) => `
-        <div class="mini-cell ${markedSet.has(song) ? (winSet.has(i) ? 'winning' : 'marked') : ''}">${esc(song)}</div>
-      `).join('')}
+      ${p.card.map((id, i) => {
+        const t = trackById(game, id);
+        const style = t ? coverStyle(t) : 'background:#1f1f1f';
+        const cls   = markedSet.has(id) ? (winSet.has(i) ? 'winning' : 'marked') : '';
+        return `<div class="mini-cell ${cls}" style="${style}"></div>`;
+      }).join('')}
     </div>
   `;
   return el;
@@ -633,9 +1010,61 @@ function showWinBanner(name, isMe) {
   if (!isMe) setTimeout(() => banner.classList.add('hidden'), 7000);
 }
 
+// ---------------------------------------------------------------------------
+// Played bottom sheet
+// ---------------------------------------------------------------------------
+
+function openPlayedSheet() {
+  $('played-sheet').classList.remove('hidden');
+  $('input-played-filter').value = '';
+  renderPlayedSheet();
+  setTimeout(() => $('input-played-filter').focus(), 50);
+}
+
+function closePlayedSheet() {
+  $('played-sheet').classList.add('hidden');
+}
+
+function renderPlayedSheet() {
+  if (!currentGame) return;
+  const filter = $('input-played-filter').value.trim().toLowerCase();
+  const marked = new Set(currentGame.markedIds || []);
+  const list   = $('played-list');
+
+  const items = (currentGame.pool || []).filter(t =>
+    !filter
+    || t.title.toLowerCase().includes(filter)
+    || (t.artist || '').toLowerCase().includes(filter)
+  );
+
+  if (!items.length) {
+    list.innerHTML = '<div class="played-empty">No tracks match.</div>';
+    return;
+  }
+
+  list.innerHTML = items.map(t => `
+    <button class="played-row ${marked.has(t.id) ? 'is-marked' : ''}" data-id="${esc(t.id)}">
+      <div class="cover-sm" style="${coverStyle(t)}">${t.cover ? '' : esc(initialsOf(t.title, t.artist))}</div>
+      <div class="played-meta">
+        <div class="played-title">${esc(t.title)}</div>
+        <div class="played-artist">${esc(t.artist)}</div>
+      </div>
+      <span class="played-flag">${marked.has(t.id) ? 'Played' : 'Mark'}</span>
+    </button>
+  `).join('');
+
+  list.querySelectorAll('.played-row').forEach(btn => {
+    btn.addEventListener('click', () => toggleMark(btn.dataset.id));
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Admin
+// ---------------------------------------------------------------------------
+
 async function enterAdminFlow() {
   if (unsubGame) { unsubGame(); unsubGame = null; }
+  stopHostHeartbeat();
 
   const u = auth.currentUser;
   if (u && !u.isAnonymous && u.uid === ADMIN_UID) {
@@ -717,7 +1146,7 @@ function renderAdminSessions(snap) {
       <div class="session-meta">
         <div>Host: <strong>${esc(hostName)}</strong></div>
         <div>Created: ${formatDate(g.createdAt)} <span class="session-age">(${formatAge(g.createdAt)})</span></div>
-        <div>Pool: ${(g.pool || []).length} songs · Played: ${(g.markedSongs || []).length}</div>
+        <div>Pool: ${(g.pool || []).length} songs · Played: ${(g.markedIds || []).length}</div>
       </div>
       <div class="session-players">
         <strong>${players.length} player${players.length === 1 ? '' : 's'}:</strong>

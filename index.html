@@ -7,9 +7,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
+
+  <!-- Global banners (absolute, do not shift layout) -->
+  <div id="connection-banner" class="global-banner hidden"></div>
 
   <!-- Welcome -->
   <div id="screen-welcome" class="screen active">
@@ -50,6 +53,8 @@
   <div id="screen-lobby" class="screen">
     <div class="lobby-wrap">
 
+      <div id="host-grace-banner" class="grace-banner hidden"></div>
+
       <div class="code-banner">
         <span class="code-label">Code</span>
         <strong id="lbl-game-code"></strong>
@@ -64,11 +69,15 @@
 
         <section class="panel pool-panel">
           <h3>Song pool <span class="badge" id="lbl-pool-count">0</span></h3>
-          <div class="add-row">
-            <input id="input-song" type="text" placeholder="Song name" maxlength="60" autocomplete="off">
-            <button id="btn-add-song" class="btn btn-secondary btn-sm">Add</button>
+
+          <div class="search-box">
+            <input id="input-search" type="text"
+                   placeholder="Search for a track…"
+                   autocomplete="off" autocapitalize="off" spellcheck="false">
+            <div id="search-results" class="search-results hidden"></div>
           </div>
-          <ul id="list-pool"></ul>
+
+          <ul id="list-pool" class="pool-list"></ul>
         </section>
       </div>
 
@@ -100,7 +109,8 @@
     <header class="game-header">
       <span class="header-code">Code <strong id="lbl-code-game"></strong></span>
       <span class="header-marked">Played <strong id="lbl-marked-count">0</strong></span>
-      <button id="btn-new-game" class="btn btn-ghost btn-sm">New game</button>
+      <button id="btn-new-game" class="btn btn-ghost btn-sm">Leave</button>
+      <button id="btn-end-game" class="btn btn-ghost btn-sm">End game</button>
     </header>
 
     <div class="game-body">
@@ -120,6 +130,24 @@
       <span class="footer-label">Songs played</span>
       <div id="marked-tags" class="marked-tags"></div>
     </footer>
+
+    <!-- Played FAB -->
+    <button id="btn-open-played" class="fab" title="Mark played">
+      <span class="fab-icon">♪</span><span class="fab-label">Mark played</span>
+    </button>
+
+    <!-- Played bottom sheet -->
+    <div id="played-sheet" class="played-sheet hidden">
+      <div id="played-backdrop" class="played-backdrop"></div>
+      <div class="played-panel">
+        <div class="played-head">
+          <h3>Mark played</h3>
+          <button id="btn-close-played" class="btn-icon" title="Close">Close</button>
+        </div>
+        <input id="input-played-filter" type="text" placeholder="Filter the pool…" autocomplete="off">
+        <div id="played-list" class="played-list"></div>
+      </div>
+    </div>
   </div>
 
   <!-- Admin login -->
@@ -159,7 +187,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-  <script src="firebase-config.js"></script>
-  <script src="app.js"></script>
+  <script src="firebase-config.js?v=2"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>
