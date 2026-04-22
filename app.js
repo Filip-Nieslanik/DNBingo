@@ -995,9 +995,19 @@ function renderOtherCard(pid, p, game, markedSet) {
 
 function showWinBanner(name, isMe) {
   const banner = $('win-banner');
-  $('win-text').innerHTML = isMe
-    ? '<div class="win-title">BINGO!</div><div>You won!</div>'
-    : `<div class="win-title">BINGO!</div><div>${esc(name)} won!</div>`;
+  const winText = $('win-text');
+
+  winText.textContent = '';
+
+  const titleDiv = document.createElement('div');
+  titleDiv.className = 'win-title';
+  titleDiv.textContent = 'BINGO!';
+  winText.appendChild(titleDiv);
+
+  const subDiv = document.createElement('div');
+  subDiv.textContent = isMe ? 'You won!' : `${name} won!`;
+  winText.appendChild(subDiv);
+
   banner.classList.remove('hidden');
   if (!isMe) setTimeout(() => banner.classList.add('hidden'), 7000);
 }
