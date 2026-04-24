@@ -574,13 +574,21 @@ function renderSearchResults(results, query) {
   const existing  = new Set((currentGame?.pool || []).map(t => t.id));
 
   if (!results.length) {
-    resultsEl.innerHTML = `
-      <div class="search-empty">No matches.</div>
-      <button class="search-manual">Add "${esc(query)}" as plain text</button>
-    `;
-    resultsEl.querySelector('.search-manual').addEventListener('click', () => {
+    resultsEl.innerHTML = '';
+
+    const emptyDiv = document.createElement('div');
+    emptyDiv.className = 'search-empty';
+    emptyDiv.textContent = 'No matches.';
+    resultsEl.appendChild(emptyDiv);
+
+    const manualBtn = document.createElement('button');
+    manualBtn.className = 'search-manual';
+    manualBtn.textContent = `Add "${query}" as plain text`;
+    manualBtn.addEventListener('click', () => {
       addManualTrack(query);
     });
+    resultsEl.appendChild(manualBtn);
+
     resultsEl.classList.remove('hidden');
     return;
   }
@@ -995,9 +1003,18 @@ function renderOtherCard(pid, p, game, markedSet) {
 
 function showWinBanner(name, isMe) {
   const banner = $('win-banner');
-  $('win-text').innerHTML = isMe
-    ? '<div class="win-title">BINGO!</div><div>You won!</div>'
-    : `<div class="win-title">BINGO!</div><div>${esc(name)} won!</div>`;
+  const winTextEl = $('win-text');
+  winTextEl.innerHTML = '';
+
+  const titleDiv = document.createElement('div');
+  titleDiv.className = 'win-title';
+  titleDiv.textContent = 'BINGO!';
+  winTextEl.appendChild(titleDiv);
+
+  const subDiv = document.createElement('div');
+  subDiv.textContent = isMe ? 'You won!' : `${name} won!`;
+  winTextEl.appendChild(subDiv);
+
   banner.classList.remove('hidden');
   if (!isMe) setTimeout(() => banner.classList.add('hidden'), 7000);
 }
