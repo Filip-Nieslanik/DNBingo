@@ -52,9 +52,9 @@ service cloud.firestore {
         isHost(resource.data)
         || isAdmin()
         || (
-          isInGame(request.resource.data)
+          (isInGame(resource.data) || isInGame(request.resource.data))
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-               'players', 'pool', 'markedIds',
+               'players', 'pool',
                'winner', 'winnerName', 'status'
              ])
         )

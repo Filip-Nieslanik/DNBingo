@@ -686,7 +686,7 @@ async function confirmCard() {
 }
 
 async function toggleMark(trackId) {
-  if (!currentGame) return;
+  if (!currentGame || !isHost) return;
   const marked = currentGame.markedIds || [];
   const fn = marked.includes(trackId)
     ? firebase.firestore.FieldValue.arrayRemove
@@ -769,6 +769,9 @@ function handleGameUpdate(prev) {
 
   // Refresh open played sheet in real time.
   if (!$('played-sheet').classList.contains('hidden')) renderPlayedSheet();
+
+  // Hide the played FAB for non-hosts
+  $('btn-open-played').classList.toggle('hidden', !isHost);
 
   // Local bingo detection – the transaction resolves ties.
   if (me?.card && !me.hasWon && !game.winner && checkBingo(me.card, markedSet)) {
@@ -922,7 +925,9 @@ function renderBoard(game, prev, markedSet) {
         <div class="cell-artist">${esc(track.artist)}</div>
       </div>
     `;
-    cell.addEventListener('click', () => toggleMark(trackId));
+    cell.addEventListener('click', () => {
+      if (isHost) toggleMark(trackId);
+    });
     cardEl.appendChild(cell);
   });
 
